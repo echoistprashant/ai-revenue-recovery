@@ -64,9 +64,9 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 7 — Advanced AI (Optional).** The repository includes an offline contextual-bandit-style policy learner evaluated against the deterministic policy, while all hard guardrails remain authoritative.
+**Phase 8 — Production Engineering.** The repository now includes the complete phased system plus Docker packaging, a CI workflow, operational request metrics, model-version reporting, and tested data-drift detection.
 
-Production infrastructure is not implemented yet. The learned policy is offline-only, cannot modify deployment, and cannot override fraud, retry, value, or incident guardrails.
+The policy learner remains offline-only. Docker and CI package and verify the system; they do not turn the synthetic simulator into a real payment processor.
 
 ## Local Setup
 
@@ -77,6 +77,7 @@ python scripts/train_recovery_model.py
 python scripts/evaluate_optimization.py
 python scripts/run_experiment.py
 python scripts/evaluate_policy.py
+docker compose up --build
 python scripts/run_synthetic_batch.py --count 200
 python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py
@@ -85,6 +86,8 @@ python -m streamlit run dashboard/app.py
 The synthetic batch writes to the ignored local SQLite database by default. Its output is simulated and must not be presented as commercial performance.
 
 The committed model metadata in `models/recovery_model_metadata.json` reports held-out synthetic evaluation, leakage exclusions, group separation, error counts, and coefficient-based explanations.
+
+Operational endpoints include `/operational-metrics` and `/drift`. GitHub Actions runs the test suite, model training check, and experiment report on pushes and pull requests.
 
 ## Roadmap
 

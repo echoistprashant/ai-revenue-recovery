@@ -220,3 +220,13 @@ class ExperimentResponse(BaseModel):
     recovered_revenue_delta: float
     confidence_interval_95: tuple[float, float]
     statistically_distinguishable: bool
+
+
+class DriftRequest(BaseModel):
+    reference: list[str] = Field(min_length=1)
+    current: list[str] = Field(min_length=1)
+
+
+class DriftResponse(BaseModel):
+    psi: float
+    status: str

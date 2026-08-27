@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, status
 from dataclasses import asdict
+from time import perf_counter
 
 from revenue_recovery.anomaly import gateway_health
 from revenue_recovery.config import DEFAULT_SETTINGS
@@ -7,7 +8,8 @@ from revenue_recovery.database import Database
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import AnalystTools, ApprovedCommunication, CommunicationGenerator, RevenueAnalyst
 from revenue_recovery.experimentation import ExperimentEvent, run_experiment
-from revenue_recovery.models import AnalystRequest, AnalystResponse, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.monitoring import ApplicationMetrics, drift_status, population_stability_index
+from revenue_recovery.models import AnalystRequest, AnalystResponse, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, DriftRequest, DriftResponse, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
 from revenue_recovery.optimization import PaymentHistory, recommend_payment_method, recommend_retry_window
 from revenue_recovery.service import PaymentRecoveryService, UnsupportedFailureCodeError
 
@@ -17,6 +19,21 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
     app = FastAPI(title="AI Revenue Recovery", version="0.1.0")
     decision_engine = DecisionEngine()
     communication_generator = CommunicationGenerator()
+    application_metrics = ApplicationMetrics()
+
+    @app.middleware("http")
+    async def observe_requests(request, call_next):
+        started = perf_counter()
+        error = False
+        try:
+            response = await call_next(request)
+            error = response.status_code >= 500
+            return response
+        except Exception:
+            error = True
+            raise
+        finally:
+            application_metrics.record((perf_counter() - started) * 1000, error)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -107,6 +124,17 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
             treatment_lift=request.treatment_lift,
         )
         return ExperimentResponse.model_validate(asdict(result))
+
+    @app.get("/operational-metrics")
+    def operational_metrics() -> dict[str, float | int | str]:
+        return application_metrics.snapshot() | {
+            "model_version": recovery_service.scorer.model_version if recovery_service.scorer else "unavailable"
+        }
+
+    @app.post("/drift", response_model=DriftResponse)
+    def drift(request: DriftRequest) -> DriftResponse:
+        psi = population_stability_index(request.reference, request.current)
+        return DriftResponse(psi=psi, status=drift_status(psi))
 
     return app
 

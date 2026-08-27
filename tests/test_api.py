@@ -78,3 +78,18 @@ def test_experiment_endpoint_returns_typed_comparison(service) -> None:
     })
     assert response.status_code == 200
     assert response.json()["control"]["sample_size"] + response.json()["treatment"]["sample_size"] == 20
+
+
+def test_operational_metrics_and_drift_endpoints(service) -> None:
+    client = TestClient(create_app(service))
+    client.get("/health")
+    metrics = client.get("/operational-metrics")
+    assert metrics.status_code == 200
+    assert metrics.json()["request_count"] >= 1
+    assert metrics.json()["model_version"] == "recovery-logistic-v1"
+    drift = client.post("/drift", json={
+        "reference": ["CARD"] * 70 + ["UPI"] * 30,
+        "current": ["CARD"] * 20 + ["UPI"] * 80,
+    })
+    assert drift.status_code == 200
+    assert drift.json()["status"] == "SIGNIFICANT_DRIFT"
