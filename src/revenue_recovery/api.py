@@ -9,7 +9,7 @@ from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import AnalystTools, ApprovedCommunication, CommunicationGenerator, RevenueAnalyst
 from revenue_recovery.experimentation import ExperimentEvent, run_experiment
 from revenue_recovery.monitoring import ApplicationMetrics, drift_status, population_stability_index
-from revenue_recovery.models import AnalystRequest, AnalystResponse, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, DriftRequest, DriftResponse, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.models import AnalystRequest, AnalystResponse, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, DriftRequest, DriftResponse, EventHistoryItem, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
 from revenue_recovery.optimization import PaymentHistory, recommend_payment_method, recommend_retry_window
 from revenue_recovery.service import PaymentRecoveryService, UnsupportedFailureCodeError
 
@@ -56,6 +56,14 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
             return recovery_service.get_top_priority_cases(limit)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/history", response_model=list[EventHistoryItem])
+    def history(limit: int = 50) -> list[EventHistoryItem]:
+        try:
+            return recovery_service.get_history(limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
 
     @app.post("/recommendations", response_model=OptimizationResponse)
     def recommendations(request: OptimizationRequest) -> OptimizationResponse:

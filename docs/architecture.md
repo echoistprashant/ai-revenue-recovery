@@ -99,6 +99,6 @@ ML + Rules → Deterministic Decision Engine → Approved Action → LLM → Com
 
 All synthetic experiments must be clearly labeled as simulated. Synthetic recovery rates, recovered revenue, model performance, incident behavior, or business improvements must never be presented as observed commercial performance. No synthetic data is generated during Phase 0.
 
-## Additional Clarifications
+## Decision 11 — Operational Control Center Frontend
 
-Logistic Regression coefficients are the initial explainability mechanism. SHAP is not required unless a later tree-based model is introduced. The initial churn value is a risk score, not a calibrated churn probability. Exact guardrail precedence will be specified before guardrail implementation, with hard stops taking priority. Repository initialization uses `phase-00`; official roadmap phases use `phase-01` through `phase-08`.
+The user-facing Operational Control Center is implemented using Streamlit (`dashboard/app.py`) backed by an isolated `APIClient` (`dashboard/api_client.py`). The frontend remains strictly presentation and orchestration, while business logic, decision rules, ML scoring, guardrails, and audit logging reside exclusively in the FastAPI backend service.

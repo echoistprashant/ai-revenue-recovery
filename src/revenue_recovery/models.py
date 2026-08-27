@@ -230,3 +230,26 @@ class DriftRequest(BaseModel):
 class DriftResponse(BaseModel):
     psi: float
     status: str
+
+
+class EventHistoryItem(BaseModel):
+    event_id: int
+    payment_id: str
+    attempt_id: str
+    customer_id: str
+    amount: float
+    currency: str
+    payment_method: str
+    gateway: str
+    bank: str
+    failure_category: FailureCategory
+    event_timestamp: str
+    action: RecoveryAction
+    reason: str
+    final_state: str
+    recovered: bool | None = None
+    recovery_probability: float | None = None
+    churn_risk: float | None = None
+    revenue_at_risk: float | None = None
+    priority_score: float | None = None
+    created_at: str

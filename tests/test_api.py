@@ -93,3 +93,15 @@ def test_operational_metrics_and_drift_endpoints(service) -> None:
     })
     assert drift.status_code == 200
     assert drift.json()["status"] == "SIGNIFICANT_DRIFT"
+
+
+def test_history_endpoint_returns_event_log(service, event_payload: dict) -> None:
+    client = TestClient(create_app(service))
+    client.post("/events", json=event_payload)
+    history = client.get("/history?limit=10")
+    assert history.status_code == 200
+    items = history.json()
+    assert len(items) == 1
+    assert items[0]["payment_id"] == event_payload["payment_id"]
+    assert items[0]["failure_category"] == "INSUFFICIENT_FUNDS"
+    assert items[0]["action"] is not None

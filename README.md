@@ -64,9 +64,10 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 8 — Production Engineering.** The repository now includes the complete phased system plus Docker packaging, a CI workflow, operational request metrics, model-version reporting, and tested data-drift detection.
+**Phase 9 — Full Frontend & Operational Control Center.** The repository includes the complete system paired with an operational Streamlit Control Center (`dashboard/app.py`). The interface exposes payment ingestion, failure classification, ML recovery scoring, priority case drill-downs, deterministic decisioning, guardrail visualizers, recovery optimization recommendations, gateway anomaly checks, bounded LLM customer messaging, read-only AI analyst, experimentation, monitoring, and decision audit history.
 
-The policy learner remains offline-only. Docker and CI package and verify the system; they do not turn the synthetic simulator into a real payment processor.
+The policy learner remains offline-only. Docker and CI package and verify the system; all metrics use reproducible synthetic simulation data.
+
 
 ## Local Setup
 

@@ -6,7 +6,7 @@ from revenue_recovery.config import Settings
 from revenue_recovery.database import Database
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.guardrails import evaluate_guardrails
-from revenue_recovery.models import PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics
+from revenue_recovery.models import EventHistoryItem, FailureCategory, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics
 from revenue_recovery.scoring import RecoveryScorer
 
 
@@ -178,3 +178,46 @@ class PaymentRecoveryService:
                 (limit,),
             ).fetchall()
         return [PriorityCase(**dict(row)) for row in rows]
+
+    def get_history(self, limit: int = 50) -> list[EventHistoryItem]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT e.event_id, e.payment_id, e.attempt_id, e.customer_id, e.amount,
+                          e.currency, e.payment_method, e.gateway, e.bank, e.failure_category,
+                          e.event_timestamp, d.action, d.reason, o.final_state, o.recovered,
+                          s.recovery_probability, s.churn_risk, s.revenue_at_risk,
+                          s.priority_score, e.created_at
+                   FROM payment_events e
+                   JOIN decisions d ON d.event_id = e.event_id
+                   JOIN outcomes o ON o.event_id = e.event_id
+                   LEFT JOIN scores s ON s.event_id = e.event_id
+                   ORDER BY e.event_id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            EventHistoryItem(
+                event_id=row["event_id"],
+                payment_id=row["payment_id"],
+                attempt_id=row["attempt_id"],
+                customer_id=row["customer_id"],
+                amount=row["amount"],
+                currency=row["currency"],
+                payment_method=row["payment_method"],
+                gateway=row["gateway"],
+                bank=row["bank"],
+                failure_category=FailureCategory(row["failure_category"]),
+                event_timestamp=row["event_timestamp"],
+                action=RecoveryAction(row["action"]),
+                reason=row["reason"],
+                final_state=row["final_state"],
+                recovered=None if row["recovered"] is None else bool(row["recovered"]),
+                recovery_probability=row["recovery_probability"],
+                churn_risk=row["churn_risk"],
+                revenue_at_risk=row["revenue_at_risk"],
+                priority_score=row["priority_score"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
