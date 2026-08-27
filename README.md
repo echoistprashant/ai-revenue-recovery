@@ -64,9 +64,9 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 2 — Machine Learning Layer.** The repository contains the Phase 1 recovery baseline plus a versioned Logistic Regression recovery model, a transparent churn-risk heuristic, configurable revenue-at-risk calculation, deterministic priority scoring, and ranked priority-case APIs/dashboard output.
+**Phase 3 — Recovery Optimization.** The repository contains the recovery baseline and scoring layer plus explainable customer-specific retry-window and payment-method recommendations with confidence, cold-start fallbacks, and a same-population optimization comparison.
 
-Personalized recovery optimization, the centralized decision engine, advanced guardrails and incident detection, LLM integrations, and experimentation are not implemented yet. Phase 2 scores cases but does not allow model probability to choose or execute a financial action.
+The centralized decision engine, advanced guardrails and incident detection, LLM integrations, and general experimentation engine are not implemented yet. Phase 3 produces recommendations and measured simulated comparisons but does not execute financial actions.
 
 ## Local Setup
 
@@ -74,6 +74,7 @@ Personalized recovery optimization, the centralized decision engine, advanced gu
 python -m pip install -e ".[dev]"
 python -m pytest
 python scripts/train_recovery_model.py
+python scripts/evaluate_optimization.py
 python scripts/run_synthetic_batch.py --count 200
 python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py

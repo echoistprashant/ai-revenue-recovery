@@ -93,3 +93,29 @@ class PriorityCase(BaseModel):
     revenue_at_risk: float
     priority_score: float
     model_version: str
+
+
+class PaymentHistoryInput(BaseModel):
+    customer_id: str
+    timestamp: datetime
+    payment_method: PaymentMethod
+    successful: bool
+
+
+class OptimizationRequest(BaseModel):
+    customer_id: str
+    reference_hour: int = Field(ge=0, le=23)
+    history: list[PaymentHistoryInput]
+
+
+class OptimizationResponse(BaseModel):
+    customer_id: str
+    retry_after_hours: int
+    preferred_hour: int
+    timing_confidence: float
+    timing_reason: str
+    recommended_payment_method: PaymentMethod
+    method_success_rate: float
+    method_sample_size: int
+    method_confidence: float
+    method_reason: str

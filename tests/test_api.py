@@ -21,3 +21,20 @@ def test_api_rejects_unknown_failure_code(service, event_payload: dict) -> None:
     response = TestClient(create_app(service)).post("/events", json=event_payload)
     assert response.status_code == 422
     assert "Unsupported failure code" in response.json()["detail"]
+
+
+def test_recommendation_api_is_typed_and_personalized(service) -> None:
+    response = TestClient(create_app(service)).post("/recommendations", json={
+        "customer_id": "customer_1",
+        "reference_hour": 10,
+        "history": [
+            {"customer_id": "customer_1", "timestamp": "2026-01-01T20:00:00Z", "payment_method": "UPI", "successful": True},
+            {"customer_id": "customer_1", "timestamp": "2026-02-01T20:00:00Z", "payment_method": "UPI", "successful": True},
+            {"customer_id": "customer_1", "timestamp": "2026-03-01T09:00:00Z", "payment_method": "CARD", "successful": False},
+        ],
+    })
+    assert response.status_code == 200
+    result = response.json()
+    assert result["preferred_hour"] == 20
+    assert result["retry_after_hours"] == 10
+    assert result["recommended_payment_method"] == "UPI"
