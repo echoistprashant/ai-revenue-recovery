@@ -9,7 +9,10 @@ from revenue_recovery.service import PaymentRecoveryService
 
 @pytest.fixture
 def service(tmp_path: Path) -> PaymentRecoveryService:
-    settings = Settings(database_path=tmp_path / "test.db")
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        recovery_model_path=Path("models/recovery_model.joblib"),
+    )
     return PaymentRecoveryService(Database(settings.database_path), settings)
 
 

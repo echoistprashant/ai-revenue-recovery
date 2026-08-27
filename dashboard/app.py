@@ -25,3 +25,11 @@ columns[3].metric("Recovered revenue", f"INR {metrics['recovered_revenue']:,.2f}
 
 st.subheader("Failure breakdown")
 st.bar_chart(metrics["failure_breakdown"])
+
+st.subheader("Top priority cases")
+try:
+    priority_response = requests.get(f"{API_URL}/priority-cases", params={"limit": 10}, timeout=5)
+    priority_response.raise_for_status()
+    st.dataframe(priority_response.json(), use_container_width=True, hide_index=True)
+except requests.RequestException as exc:
+    st.warning(f"Priority cases are unavailable: {exc}")

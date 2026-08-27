@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (event_id) REFERENCES payment_events(event_id)
 );
+
+CREATE TABLE IF NOT EXISTS scores (
+    score_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL UNIQUE,
+    recovery_probability REAL NOT NULL CHECK (recovery_probability >= 0 AND recovery_probability <= 1),
+    churn_risk REAL NOT NULL CHECK (churn_risk >= 0 AND churn_risk <= 1),
+    revenue_at_risk REAL NOT NULL CHECK (revenue_at_risk >= 0),
+    priority_score REAL NOT NULL CHECK (priority_score >= 0),
+    model_version TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES payment_events(event_id)
+);
 """
 
 

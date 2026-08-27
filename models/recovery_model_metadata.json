@@ -1,0 +1,87 @@
+{
+  "model_version": "recovery-logistic-v1",
+  "model_type": "LogisticRegression",
+  "seed": 20260827,
+  "training_rows": 2195,
+  "test_rows": 805,
+  "training_customers": 447,
+  "test_customers": 150,
+  "customer_group_overlap": 0,
+  "split_strategy": "GroupShuffleSplit by customer_id",
+  "features": [
+    "failure_category",
+    "payment_method",
+    "previous_success_count",
+    "previous_failure_count",
+    "customer_age_days",
+    "subscription_value",
+    "retry_count",
+    "hour",
+    "day_of_week"
+  ],
+  "excluded_post_decision_fields": [
+    "recovered",
+    "recovery_time",
+    "final_state"
+  ],
+  "decision_threshold_for_evaluation_only": 0.5,
+  "metrics": {
+    "precision": 0.7329,
+    "recall": 0.7488,
+    "f1": 0.7407,
+    "roc_auc": 0.7985
+  },
+  "class_balance": {
+    "train_recovery_rate": 0.4907,
+    "test_recovery_rate": 0.5143
+  },
+  "error_analysis": {
+    "true_negative": 278,
+    "false_positive": 113,
+    "false_negative": 104,
+    "true_positive": 310
+  },
+  "largest_absolute_coefficients": [
+    {
+      "feature": "categorical__failure_category_FRAUD_RISK_DECLINE",
+      "coefficient": -2.5915
+    },
+    {
+      "feature": "categorical__failure_category_INVALID_CARD",
+      "coefficient": -2.0108
+    },
+    {
+      "feature": "categorical__failure_category_GATEWAY_OR_NETWORK_FAILURE",
+      "coefficient": 1.9971
+    },
+    {
+      "feature": "categorical__failure_category_TEMPORARY_BANK_ISSUE",
+      "coefficient": 1.5039
+    },
+    {
+      "feature": "categorical__failure_category_INSUFFICIENT_FUNDS",
+      "coefficient": 1.3225
+    },
+    {
+      "feature": "categorical__failure_category_EXPIRED_CARD",
+      "coefficient": -0.8888
+    },
+    {
+      "feature": "numeric__previous_failure_count",
+      "coefficient": -0.5036
+    },
+    {
+      "feature": "categorical__failure_category_AUTHENTICATION_FAILURE",
+      "coefficient": 0.4839
+    },
+    {
+      "feature": "numeric__retry_count",
+      "coefficient": -0.4271
+    },
+    {
+      "feature": "numeric__previous_success_count",
+      "coefficient": 0.3349
+    }
+  ],
+  "synthetic_data_disclaimer": "Metrics are from reproducible synthetic data, not production performance."
+}

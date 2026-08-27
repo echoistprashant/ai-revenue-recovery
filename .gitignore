@@ -47,6 +47,8 @@ models/*.joblib
 models/*.pkl
 models/*.pickle
 models/*.onnx
+!models/recovery_model.joblib
+!models/recovery_model_metadata.json
 
 # IDE, OS, and editor files
 .idea/

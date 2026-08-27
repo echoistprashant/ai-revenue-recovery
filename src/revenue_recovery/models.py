@@ -65,6 +65,11 @@ class ProcessedEvent(BaseModel):
     retry_delay_hours: int | None
     reason: str
     recovered: bool | None
+    recovery_probability: float | None = None
+    churn_risk: float | None = None
+    revenue_at_risk: float | None = None
+    priority_score: float | None = None
+    model_version: str | None = None
     duplicate: bool = False
 
 
@@ -76,3 +81,15 @@ class RecoveryMetrics(BaseModel):
     recovery_rate: float
     recovered_revenue: float
     failure_breakdown: dict[str, int]
+
+
+class PriorityCase(BaseModel):
+    payment_id: str
+    attempt_id: str
+    failure_category: FailureCategory
+    amount: float
+    recovery_probability: float
+    churn_risk: float
+    revenue_at_risk: float
+    priority_score: float
+    model_version: str

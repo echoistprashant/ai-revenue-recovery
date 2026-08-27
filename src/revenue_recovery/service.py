@@ -4,7 +4,8 @@ from revenue_recovery.baseline import select_baseline_action, simulate_outcome
 from revenue_recovery.classification import classify_failure
 from revenue_recovery.config import Settings
 from revenue_recovery.database import Database
-from revenue_recovery.models import BaselineAction, PaymentEventCreate, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.models import BaselineAction, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.scoring import RecoveryScorer
 
 
 class UnsupportedFailureCodeError(ValueError):
@@ -16,6 +17,7 @@ class PaymentRecoveryService:
         self.database = database
         self.settings = settings
         self.database.initialize()
+        self.scorer = RecoveryScorer(settings.recovery_model_path) if settings.recovery_model_path.exists() else None
 
     def process_event(self, event: PaymentEventCreate) -> ProcessedEvent:
         try:
@@ -27,6 +29,11 @@ class PaymentRecoveryService:
         recovered = (
             simulate_outcome(category, event.payment_id, event.retry_count)
             if decision.action is BaselineAction.RETRY_LATER
+            else None
+        )
+        score = (
+            self.scorer.score(event, category, self.settings.assumed_remaining_months)
+            if self.scorer
             else None
         )
 
@@ -58,6 +65,17 @@ class PaymentRecoveryService:
                 "INSERT INTO decisions (event_id, action, retry_delay_hours, reason) VALUES (?, ?, ?, ?)",
                 (event_id, decision.action.value, decision.retry_delay_hours, decision.reason),
             )
+            if score:
+                connection.execute(
+                    """INSERT INTO scores (
+                        event_id, recovery_probability, churn_risk, revenue_at_risk,
+                        priority_score, model_version
+                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        event_id, score.recovery_probability, score.churn_risk,
+                        score.revenue_at_risk, score.priority_score, score.model_version,
+                    ),
+                )
             if recovered is None:
                 final_state = "STOPPED"
                 recovered_amount = 0.0
@@ -76,6 +94,11 @@ class PaymentRecoveryService:
                 "action": decision.action.value,
                 "reason": decision.reason,
                 "final_state": final_state,
+                "recovery_probability": score.recovery_probability if score else None,
+                "churn_risk": score.churn_risk if score else None,
+                "revenue_at_risk": score.revenue_at_risk if score else None,
+                "priority_score": score.priority_score if score else None,
+                "model_version": score.model_version if score else None,
             })
             return ProcessedEvent(
                 event_id=event_id,
@@ -86,15 +109,23 @@ class PaymentRecoveryService:
                 retry_delay_hours=decision.retry_delay_hours,
                 reason=decision.reason,
                 recovered=recovered,
+                recovery_probability=score.recovery_probability if score else None,
+                churn_risk=score.churn_risk if score else None,
+                revenue_at_risk=score.revenue_at_risk if score else None,
+                priority_score=score.priority_score if score else None,
+                model_version=score.model_version if score else None,
             )
 
     def _load_processed(self, connection: sqlite3.Connection, event_id: int, duplicate: bool) -> ProcessedEvent:
         row = connection.execute(
             """SELECT e.event_id, e.payment_id, e.attempt_id, e.failure_category,
-                      d.action, d.retry_delay_hours, d.reason, o.recovered
+                      d.action, d.retry_delay_hours, d.reason, o.recovered,
+                      s.recovery_probability, s.churn_risk, s.revenue_at_risk,
+                      s.priority_score, s.model_version
                FROM payment_events e
                JOIN decisions d ON d.event_id = e.event_id
                JOIN outcomes o ON o.event_id = e.event_id
+               LEFT JOIN scores s ON s.event_id = e.event_id
                WHERE e.event_id = ?""",
             (event_id,),
         ).fetchone()
@@ -103,6 +134,9 @@ class PaymentRecoveryService:
             failure_category=row["failure_category"], action=row["action"],
             retry_delay_hours=row["retry_delay_hours"], reason=row["reason"],
             recovered=None if row["recovered"] is None else bool(row["recovered"]), duplicate=duplicate,
+            recovery_probability=row["recovery_probability"], churn_risk=row["churn_risk"],
+            revenue_at_risk=row["revenue_at_risk"], priority_score=row["priority_score"],
+            model_version=row["model_version"],
         )
 
     def get_metrics(self) -> RecoveryMetrics:
@@ -125,3 +159,17 @@ class PaymentRecoveryService:
             recovered_revenue=round(summary["revenue"], 2),
             failure_breakdown={row["failure_category"]: row["count"] for row in breakdown_rows},
         )
+
+    def get_top_priority_cases(self, limit: int = 10) -> list[PriorityCase]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT e.payment_id, e.attempt_id, e.failure_category, e.amount,
+                          s.recovery_probability, s.churn_risk, s.revenue_at_risk,
+                          s.priority_score, s.model_version
+                   FROM scores s JOIN payment_events e ON e.event_id = s.event_id
+                   ORDER BY s.priority_score DESC, e.event_id ASC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [PriorityCase(**dict(row)) for row in rows]

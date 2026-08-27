@@ -11,6 +11,9 @@ def test_event_api_and_metrics(service, event_payload: dict) -> None:
     metrics = client.get("/metrics")
     assert metrics.status_code == 200
     assert metrics.json()["total_failures"] == 1
+    priorities = client.get("/priority-cases?limit=5")
+    assert priorities.status_code == 200
+    assert len(priorities.json()) == 1
 
 
 def test_api_rejects_unknown_failure_code(service, event_payload: dict) -> None:

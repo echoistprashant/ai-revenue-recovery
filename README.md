@@ -64,21 +64,24 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 1 — Core Payment Recovery.** The repository now contains the non-ML baseline: typed event ingestion, SQLite persistence, failure classification, idempotency, a fixed retry schedule, deterministic simulated outcomes, audit records, basic metrics, a reproducible synthetic batch, and a minimal dashboard.
+**Phase 2 — Machine Learning Layer.** The repository contains the Phase 1 recovery baseline plus a versioned Logistic Regression recovery model, a transparent churn-risk heuristic, configurable revenue-at-risk calculation, deterministic priority scoring, and ranked priority-case APIs/dashboard output.
 
-Machine-learning scoring, personalized optimization, advanced guardrails and incident detection, LLM integrations, and experimentation are not implemented yet.
+Personalized recovery optimization, the centralized decision engine, advanced guardrails and incident detection, LLM integrations, and experimentation are not implemented yet. Phase 2 scores cases but does not allow model probability to choose or execute a financial action.
 
 ## Local Setup
 
 ```text
 python -m pip install -e ".[dev]"
 python -m pytest
+python scripts/train_recovery_model.py
 python scripts/run_synthetic_batch.py --count 200
 python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py
 ```
 
 The synthetic batch writes to the ignored local SQLite database by default. Its output is simulated and must not be presented as commercial performance.
+
+The committed model metadata in `models/recovery_model_metadata.json` reports held-out synthetic evaluation, leakage exclusions, group separation, error counts, and coefficient-based explanations.
 
 ## Roadmap
 
