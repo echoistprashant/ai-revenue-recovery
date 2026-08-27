@@ -1,103 +1,156 @@
+"""Database access for both supported drivers.
+
+Local development, tests, and CI run on SQLite with zero infrastructure; the
+production containers run on PostgreSQL. One engine factory and one connection
+wrapper serve both, and all SQL in the project stays dialect-neutral (named
+bind parameters, ``INSERT ... RETURNING``, no vendor-specific syntax).
+"""
+
 import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, Mapping, Sequence
+
+from sqlalchemy import Connection, event, inspect, text
+from sqlalchemy.engine import Engine, create_engine, make_url
+
+from revenue_recovery.clock import iso_now
+from revenue_recovery.schema import METADATA
+
+SQLITE_DRIVER = "sqlite+pysqlite"
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS payment_events (
-    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    payment_id TEXT NOT NULL,
-    attempt_id TEXT NOT NULL,
-    customer_id TEXT NOT NULL,
-    subscription_id TEXT NOT NULL,
-    amount REAL NOT NULL CHECK (amount > 0),
-    currency TEXT NOT NULL,
-    payment_method TEXT NOT NULL,
-    gateway TEXT NOT NULL,
-    bank TEXT NOT NULL,
-    failure_code TEXT NOT NULL,
-    failure_category TEXT NOT NULL,
-    event_timestamp TEXT NOT NULL,
-    previous_success_count INTEGER NOT NULL,
-    previous_failure_count INTEGER NOT NULL,
-    customer_age_days INTEGER NOT NULL,
-    subscription_value REAL NOT NULL,
-    retry_count INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (payment_id, attempt_id)
-);
+class SchemaNotMigratedError(RuntimeError):
+    """Raised when a non-SQLite database is missing tables Alembic should have created."""
 
-CREATE TABLE IF NOT EXISTS decisions (
-    decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL UNIQUE,
-    action TEXT NOT NULL,
-    retry_delay_hours INTEGER,
-    reason TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (event_id) REFERENCES payment_events(event_id)
-);
 
-CREATE TABLE IF NOT EXISTS outcomes (
-    outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL UNIQUE,
-    recovered INTEGER,
-    recovered_amount REAL NOT NULL DEFAULT 0,
-    final_state TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (event_id) REFERENCES payment_events(event_id)
-);
+def normalize_database_url(target: str | Path) -> str:
+    """Accept a filesystem path or a database URL and return a SQLAlchemy URL.
 
-CREATE TABLE IF NOT EXISTS audit_log (
-    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL,
-    event_type TEXT NOT NULL,
-    details_json TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (event_id) REFERENCES payment_events(event_id)
-);
+    Filesystem paths keep working so the SQLite-era call sites and the
+    ``REVENUE_RECOVERY_DATABASE`` variable need no change.
+    """
+    if isinstance(target, Path):
+        return f"{SQLITE_DRIVER}:///{target.as_posix()}"
+    if "://" not in target:
+        return f"{SQLITE_DRIVER}:///{Path(target).as_posix()}"
+    url = make_url(target)
+    if url.drivername in {"postgres", "postgresql"}:
+        url = url.set(drivername="postgresql+psycopg")
+    elif url.drivername == "sqlite":
+        url = url.set(drivername=SQLITE_DRIVER)
+    return url.render_as_string(hide_password=False)
 
-CREATE TABLE IF NOT EXISTS scores (
-    score_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL UNIQUE,
-    recovery_probability REAL NOT NULL CHECK (recovery_probability >= 0 AND recovery_probability <= 1),
-    churn_risk REAL NOT NULL CHECK (churn_risk >= 0 AND churn_risk <= 1),
-    revenue_at_risk REAL NOT NULL CHECK (revenue_at_risk >= 0),
-    priority_score REAL NOT NULL CHECK (priority_score >= 0),
-    model_version TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (event_id) REFERENCES payment_events(event_id)
-);
-"""
+
+def is_sqlite_url(url: str) -> bool:
+    return make_url(url).get_backend_name() == "sqlite"
+
+
+def sqlite_file_path(url: str) -> Path | None:
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "sqlite" or not parsed.database or parsed.database == ":memory:":
+        return None
+    return Path(parsed.database)
+
+
+class DatabaseConnection:
+    """Thin wrapper so callers write plain SQL and read rows by column name."""
+
+    def __init__(self, connection: Connection):
+        self._connection = connection
+
+    def execute(self, sql: str, params: Mapping[str, Any] | None = None) -> Any:
+        return self._connection.execute(text(sql), dict(params or {}))
+
+    def fetch_one(self, sql: str, params: Mapping[str, Any] | None = None) -> Mapping[str, Any] | None:
+        return self.execute(sql, params).mappings().fetchone()
+
+    def fetch_all(self, sql: str, params: Mapping[str, Any] | None = None) -> Sequence[Mapping[str, Any]]:
+        return self.execute(sql, params).mappings().fetchall()
+
+    def insert_returning_id(self, sql: str, params: Mapping[str, Any], id_column: str) -> int:
+        row = self.fetch_one(f"{sql} RETURNING {id_column}", params)
+        if row is None:
+            raise RuntimeError("Insert did not return an identifier")
+        return int(row[id_column])
 
 
 class Database:
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, target: str | Path, echo: bool = False):
+        self.url = normalize_database_url(target)
+        self.is_sqlite = is_sqlite_url(self.url)
+        self.engine = self._create_engine(echo)
+
+    @property
+    def path(self) -> Path | None:
+        """Filesystem location for SQLite databases, ``None`` for PostgreSQL."""
+        return sqlite_file_path(self.url)
+
+    def _create_engine(self, echo: bool) -> Engine:
+        if self.is_sqlite:
+            file_path = self.path
+            if file_path is not None and file_path.parent != Path(""):
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+            engine = create_engine(
+                self.url,
+                echo=echo,
+                future=True,
+                connect_args={"check_same_thread": False, "timeout": 30},
+            )
+            event.listen(engine, "connect", _apply_sqlite_pragmas)
+            return engine
+        return create_engine(self.url, echo=echo, future=True, pool_pre_ping=True, pool_size=5, max_overflow=5)
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+    def connect(self) -> Iterator[DatabaseConnection]:
+        with self.engine.begin() as connection:
+            yield DatabaseConnection(connection)
 
     def initialize(self) -> None:
-        with self.connect() as connection:
-            connection.executescript(SCHEMA)
+        """Make sure the schema is present before the application uses it.
+
+        SQLite is created in place, which is what keeps local dev, tests, and CI
+        free of any setup step. On PostgreSQL, Alembic owns the schema: creating
+        tables here would let a process boot against a database no migration has
+        ever touched, and the two definitions would then drift apart silently. So
+        the production path verifies and refuses instead of creating.
+        """
+        if self.is_sqlite:
+            METADATA.create_all(self.engine)
+            return
+        self.verify_schema()
+
+    def verify_schema(self) -> None:
+        inspector = inspect(self.engine)
+        missing = sorted(name for name in METADATA.tables if not inspector.has_table(name))
+        if missing:
+            raise SchemaNotMigratedError(
+                "Database is missing tables: "
+                + ", ".join(missing)
+                + ". Run `alembic upgrade head` against DATABASE_URL before starting the application."
+            )
+
+    def dispose(self) -> None:
+        self.engine.dispose()
 
     @staticmethod
-    def audit(connection: sqlite3.Connection, event_id: int, event_type: str, details: dict) -> None:
+    def audit(connection: DatabaseConnection, event_id: int, event_type: str, details: dict) -> None:
         connection.execute(
-            "INSERT INTO audit_log (event_id, event_type, details_json) VALUES (?, ?, ?)",
-            (event_id, event_type, json.dumps(details, sort_keys=True)),
+            """INSERT INTO audit_log (event_id, event_type, details_json, created_at)
+               VALUES (:event_id, :event_type, :details_json, :created_at)""",
+            {
+                "event_id": event_id,
+                "event_type": event_type,
+                "details_json": json.dumps(details, sort_keys=True, default=str),
+                "created_at": iso_now(),
+            },
         )
+
+
+def _apply_sqlite_pragmas(dbapi_connection: sqlite3.Connection, _record: Any) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.execute("PRAGMA journal_mode = WAL")
+    cursor.execute("PRAGMA busy_timeout = 30000")
+    cursor.close()

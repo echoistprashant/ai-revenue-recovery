@@ -15,5 +15,13 @@ jobs:
           cache: pip
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
+      # A migration that no longer matches the metadata is a deployment failure, so
+      # CI applies it to a scratch database and asserts there is nothing left to add.
+      - name: alembic upgrade and drift check
+        env:
+          REVENUE_RECOVERY_DATABASE: ci-migration-check.db
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
       - run: python scripts/train_recovery_model.py
       - run: python scripts/run_experiment.py

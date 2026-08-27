@@ -8,15 +8,22 @@ version = "0.1.0"
 description = "Explainable recurring-payment recovery platform"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.16,<1.17",
   "fastapi>=0.116,<0.117",
   "pydantic>=2.11,<3",
   "requests>=2.32,<3",
   "scikit-learn>=1.7,<1.8",
+  "sqlalchemy>=2.0,<2.1",
   "streamlit>=1.48,<1.49",
   "uvicorn>=0.35,<0.36",
 ]
 
 [project.optional-dependencies]
+# PostgreSQL is only needed by deployments that set DATABASE_URL; local dev, tests
+# and CI run on SQLite so the default install stays free of a driver build step.
+postgres = [
+  "psycopg[binary]>=3.2,<3.3",
+]
 dev = [
   "httpx>=0.28,<0.29",
   "pytest>=8.4,<8.5",

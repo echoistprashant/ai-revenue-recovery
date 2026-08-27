@@ -77,6 +77,8 @@ Neither an ML score nor an LLM response may override this result. The guardrail 
 
 SQLite is the initial database. PostgreSQL is not introduced during Phase 0, and no database or table is created during this phase.
 
+Revised in Phase 11: see Decision 13.
+
 ## Decision 7 — Initial Retry Timing
 
 The initial system will use fixed or failure-category-based retry windows. Personalized retry-timing ML belongs to the later Recovery Optimization phase.
@@ -84,6 +86,8 @@ The initial system will use fixed or failure-category-based retry windows. Perso
 ## Decision 8 — Deferred Infrastructure
 
 Kafka, Redpanda, Redis, Celery, Kubernetes, microservices, complex MLOps, vector databases, retrieval-augmented generation, and reinforcement learning are not introduced during Phase 0. They remain deferred unless explicitly approved later.
+
+This still holds in Phase 11. Durable background execution was needed, and it was built as a database table plus a worker process (Decision 14) rather than by adopting a broker or task framework, so nothing on the deferred list was introduced.
 
 ## Decision 9 — LLM Boundary
 
@@ -106,3 +110,43 @@ The user-facing Operational Control Center is implemented using Streamlit (`dash
 ## Decision 12 — Payment Gateway Adapter Pattern & Signature Security
 
 Provider-specific payment gateway structures (such as Razorpay webhooks) are isolated behind an abstract `BaseGatewayAdapter` interface (`revenue_recovery.adapters`). Cryptographic HMAC-SHA256 signature verification (`X-Razorpay-Signature`) is enforced on webhook listener endpoints (`POST /webhooks/razorpay`) before payload parsing or service processing. Unsigned or invalid signature payloads are rejected with HTTP 401 Unauthorized.
+
+## Decision 13 — Dual-Driver Persistence with Migrations
+
+Storage is accessed through SQLAlchemy Core (`revenue_recovery.database`) against a
+single schema definition (`revenue_recovery.schema.METADATA`). SQLite serves local
+development, tests, and CI so those need no infrastructure; PostgreSQL
+(`postgresql+psycopg`) serves production, selected by `DATABASE_URL`. All SQL stays
+dialect-neutral: named bind parameters, `INSERT ... RETURNING`, no vendor syntax.
+
+Alembic owns schema change. `Database.initialize()` creates tables only on SQLite;
+on any other driver it verifies the tables exist and refuses to start otherwise.
+Implicit table creation in production would let a process boot against a database no
+migration had touched, after which the metadata and the migration history would
+drift apart without anyone noticing.
+
+Timestamps are stored as UTC ISO-8601 text (`revenue_recovery.clock`). Text behaves
+identically on both drivers, and a single UTC offset keeps lexicographic ordering
+equal to chronological ordering, which the queue's due-work comparison depends on.
+
+## Decision 14 — Durable Background Execution Without a Broker
+
+Recovery actions are not executed inside the request that ingested the event. The
+approved action is written to a `tasks` table and executed by a separate worker
+process (`revenue_recovery.worker`, `scripts/run_worker.py`). A delayed retry
+therefore survives a restart, and a slow notification provider cannot block webhook
+ingestion. Claiming is a conditional `UPDATE ... WHERE status = 'PENDING'`, which
+needs no dialect-specific locking hint and so behaves the same on both drivers.
+
+The queue does not sit beside the decision engine as a second source of authority.
+`ActionExecutor` re-runs the deterministic engine immediately before performing any
+side effect and withholds the action if the engine no longer approves it. Time
+passes between approval and execution — a retry cap may now be reached, an incident
+may now be active, the event may have been re-classified — so the approval is
+re-established rather than assumed. `FRAUD_RISK_DECLINE` is refused at execution
+time with no override path, and enqueueing is unique per `(event_id, task_type)`, so
+event-level idempotency extends to execution. Each task writes a `TASK_<type>` audit
+row recording the re-validated action and whether it executed.
+
+Inline execution remains the default so the recorded synthetic baselines keep their
+numbers; both modes share one execution path.

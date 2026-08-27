@@ -17,7 +17,7 @@ from revenue_recovery.service import PaymentRecoveryService, UnsupportedFailureC
 
 
 def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
-    recovery_service = service or PaymentRecoveryService(Database(DEFAULT_SETTINGS.database_path), DEFAULT_SETTINGS)
+    recovery_service = service or PaymentRecoveryService(Database(DEFAULT_SETTINGS.database_target), DEFAULT_SETTINGS)
     app = FastAPI(title="AI Revenue Recovery", version="0.1.0")
     decision_engine = DecisionEngine()
     communication_generator = CommunicationGenerator()
@@ -165,6 +165,20 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
     def drift(request: DriftRequest) -> DriftResponse:
         psi = population_stability_index(request.reference, request.current)
         return DriftResponse(psi=psi, status=drift_status(psi))
+
+    @app.get("/tasks/stats")
+    def task_stats() -> dict[str, int | str]:
+        return recovery_service.get_task_stats()
+
+    @app.post("/tasks/run-due")
+    def run_due_tasks() -> dict[str, int]:
+        """Drain due background work.
+
+        The worker process normally does this; the endpoint exists so a single-process
+        deployment and the operations UI can flush the queue on demand. It executes
+        nothing on its own authority: every task is re-checked by the decision engine.
+        """
+        return recovery_service.run_due_tasks()
 
     return app
 

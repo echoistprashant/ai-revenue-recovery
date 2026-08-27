@@ -34,6 +34,8 @@ htmlcov/
 *.sqlite
 *.sqlite3
 *.db-journal
+*.db-wal
+*.db-shm
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm

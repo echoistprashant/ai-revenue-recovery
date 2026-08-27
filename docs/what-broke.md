@@ -174,3 +174,103 @@ The script now prints valid JSON, the typed experiment endpoint validates nested
 ### 8. Lesson
 
 Unit tests for calculation logic do not replace running user-facing scripts; nested serialization requires an end-to-end check.
+
+## Issue #3 — Attempt Budget Is Fixed at Enqueue Time, Not by Worker Config
+
+### Phase
+
+Phase 11 — Production Persistence & Durable Background Execution
+
+### Date
+
+2026-08-28
+
+### Status
+
+FIXED
+
+### Severity
+
+LOW
+
+### 1. Problem
+
+A test built a worker with `TaskQueue(max_attempts=2)` and a deliberately failing retry provider, expecting the task to reach `FAILED` after two cycles.
+
+### 2. Expected Behavior
+
+Two failed attempts against a queue configured for two attempts should exhaust the task.
+
+### 3. Actual Behavior
+
+The task was still `PENDING` after the second cycle.
+
+### 4. Reproduction
+
+Enqueue a task through a `TaskQueue(max_attempts=3)`, then process it with a worker holding `TaskQueue(max_attempts=2)` and a provider that raises.
+
+### 5. Root Cause
+
+`TaskQueue.max_attempts` is only used when writing a row. `mark_failed` compares `task.attempts` against `task.max_attempts`, which `_to_task` reads back from the row. The task had been enqueued by the service's own queue with the default budget of 3, so the worker's lower setting had no effect on it.
+
+### 6. Fix
+
+The test was corrected to run three cycles and assert `attempts == 3`, rather than changing the code. Reading the budget from the row is the behaviour we want: lowering `TASK_MAX_ATTEMPTS` in configuration must not retroactively cause the system to give up on already-approved actions that are still in flight.
+
+### 7. Verification
+
+`tests/test_worker.py::test_provider_failure_keeps_the_task_visible_and_retries_it` passes and asserts the row ends `FAILED` with `attempts == 3` while the outcome stays unrecovered.
+
+### 8. Lesson
+
+For durable work, per-row limits and process configuration are different things. A queued row should carry its own budget so a config change cannot alter the fate of work already accepted — but that means a test cannot shorten an existing task's budget by reconfiguring the worker.
+
+## Issue #4 — Foreign Key Enforcement Blocked a Test That Fabricated a Broken Row
+
+### Phase
+
+Phase 11 — Production Persistence & Durable Background Execution
+
+### Date
+
+2026-08-28
+
+### Status
+
+FIXED
+
+### Severity
+
+LOW
+
+### 1. Problem
+
+A test needed to prove the worker refuses a task pointing at a non-existent event. It tried to repoint the task's `event_id`, disabling foreign keys first.
+
+### 2. Expected Behavior
+
+`PRAGMA foreign_keys = OFF` followed by the update would produce an orphaned task row.
+
+### 3. Actual Behavior
+
+`sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) FOREIGN KEY constraint failed` on the update.
+
+### 4. Reproduction
+
+Inside a transaction on a SQLite connection with `foreign_keys=ON`, execute `PRAGMA foreign_keys = OFF` and then an update that violates a foreign key.
+
+### 5. Root Cause
+
+SQLite ignores `PRAGMA foreign_keys` inside a transaction, and the project's connections are opened with `engine.begin()`, so every statement runs in one. The pragma was silently a no-op and the constraint — enabled deliberately in this phase — did its job.
+
+### 6. Fix
+
+The test stopped fabricating a broken row in the database. It claims a real task, builds an orphan with `dataclasses.replace(task, event_id=999999)`, and asserts `RecoveryWorker._load_context` raises `LookupError`.
+
+### 7. Verification
+
+`tests/test_worker.py::test_a_task_pointing_at_a_missing_event_is_refused` passes, and the provider-failure test separately covers the worker's exception path end to end.
+
+### 8. Lesson
+
+Turning on referential integrity means the database will also refuse the invalid states a test wants to create. Fabricate the invalid input at the object boundary instead of trying to defeat the constraint.

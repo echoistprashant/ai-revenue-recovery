@@ -47,6 +47,12 @@ def test_api_client_success_methods(service, event_payload: dict) -> None:
 
         analyst = api.ask_analyst("What is the recovery rate?")
         assert "answer" in analyst
+
+        task_stats = api.get_task_stats()
+        assert task_stats["execution_mode"] == "inline"
+
+        drained = api.run_due_tasks()
+        assert drained["claimed"] == 0
     finally:
         requests.request = original_request
 

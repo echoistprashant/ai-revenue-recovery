@@ -73,6 +73,18 @@ class APIClient:
     def check_drift(self, drift_data: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/drift", json=drift_data)
 
+    def get_task_stats(self) -> dict[str, Any]:
+        return self._request("GET", "/tasks/stats")
+
+    def run_due_tasks(self) -> dict[str, Any]:
+        """Flush due background work.
+
+        The worker process normally does this. The endpoint re-checks every task
+        against the decision engine, so triggering it from the UI cannot approve
+        anything the engine would refuse.
+        """
+        return self._request("POST", "/tasks/run-due")
+
     def send_razorpay_webhook(self, raw_payload: bytes, signature: str) -> dict[str, Any]:
         headers = {
             "Content-Type": "application/json",

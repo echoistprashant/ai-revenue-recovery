@@ -105,3 +105,28 @@ def test_history_endpoint_returns_event_log(service, event_payload: dict) -> Non
     assert items[0]["payment_id"] == event_payload["payment_id"]
     assert items[0]["failure_category"] == "INSUFFICIENT_FUNDS"
     assert items[0]["action"] is not None
+
+
+def test_task_endpoints_report_and_drain_the_queue(queued_service, event_payload: dict) -> None:
+    client = TestClient(create_app(queued_service))
+    client.post("/events", json=event_payload)
+
+    stats = client.get("/tasks/stats")
+    assert stats.status_code == 200
+    assert stats.json()["execution_mode"] == "queued"
+    assert stats.json()["PENDING"] == 1
+
+    # The scheduled retry is not due yet, so draining executes nothing.
+    first = client.post("/tasks/run-due")
+    assert first.status_code == 200
+    assert first.json()["claimed"] == 0
+    assert client.get("/tasks/stats").json()["PENDING"] == 1
+
+
+def test_inline_mode_reports_an_empty_queue(service, event_payload: dict) -> None:
+    client = TestClient(create_app(service))
+    client.post("/events", json=event_payload)
+    stats = client.get("/tasks/stats").json()
+    assert stats["execution_mode"] == "inline"
+    assert stats["PENDING"] == 0
+    assert stats["DONE"] == 1

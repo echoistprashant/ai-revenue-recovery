@@ -2,16 +2,29 @@ from pathlib import Path
 
 import pytest
 
-from revenue_recovery.config import Settings
+from revenue_recovery.config import QUEUED, Settings
 from revenue_recovery.database import Database
 from revenue_recovery.service import PaymentRecoveryService
+
+MODEL_PATH = Path("models/recovery_model.joblib")
 
 
 @pytest.fixture
 def service(tmp_path: Path) -> PaymentRecoveryService:
     settings = Settings(
         database_path=tmp_path / "test.db",
-        recovery_model_path=Path("models/recovery_model.joblib"),
+        recovery_model_path=MODEL_PATH,
+    )
+    return PaymentRecoveryService(Database(settings.database_path), settings)
+
+
+@pytest.fixture
+def queued_service(tmp_path: Path) -> PaymentRecoveryService:
+    """Same service with background execution, for durable-queue tests."""
+    settings = Settings(
+        database_path=tmp_path / "queued.db",
+        recovery_model_path=MODEL_PATH,
+        task_execution_mode=QUEUED,
     )
     return PaymentRecoveryService(Database(settings.database_path), settings)
 

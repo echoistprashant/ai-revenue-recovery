@@ -798,6 +798,34 @@ elif selected_module == "📈 Monitoring & Data Drift":
         m3.metric("Error Rate", f"{op_metrics.get('error_rate', 0.0):.2%}")
         m4.metric("Avg Latency", f"{op_metrics.get('average_latency_ms', 0.0):.1f} ms")
 
+        st.markdown("#### ⚙️ Background Recovery Queue")
+        st.caption(
+            "Approved actions are executed by the worker process, not by the ingesting request, "
+            "so a delayed retry survives a restart. Every task is re-checked against the decision "
+            "engine before it runs — a queued row is a record of an approval, not authority to act."
+        )
+        task_stats = api_client.get_task_stats()
+        q1, q2, q3, q4, q5 = st.columns(5)
+        q1.metric("Execution Mode", str(task_stats.get("execution_mode", "inline")).upper())
+        q2.metric("Pending", f"{task_stats.get('PENDING', 0)}")
+        q3.metric("Due Now", f"{task_stats.get('due_now', 0)}")
+        q4.metric("Completed", f"{task_stats.get('DONE', 0)}")
+        q5.metric("Failed", f"{task_stats.get('FAILED', 0)}")
+
+        if task_stats.get("FAILED", 0):
+            st.markdown(
+                f"{get_badge_html('ATTENTION: approved actions that never executed', 'danger')}",
+                unsafe_allow_html=True,
+            )
+
+        if st.button("Flush Due Background Work", use_container_width=True):
+            report = api_client.run_due_tasks()
+            st.success(
+                f"Claimed {report.get('claimed', 0)} · executed {report.get('executed', 0)} · "
+                f"withheld by guardrails {report.get('withheld', 0)} · failed {report.get('failed', 0)} · "
+                f"requeued after a stalled worker {report.get('requeued', 0)}"
+            )
+
         st.markdown("#### 🧪 PSI Data Drift Detection Test")
         st.caption("Detects whether payment method distributions shift between training baseline and live inference.")
 

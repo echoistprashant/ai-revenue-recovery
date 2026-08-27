@@ -5,8 +5,30 @@ services:
       - "8000:8000"
     environment:
       REVENUE_RECOVERY_DATABASE: /app/data/revenue_recovery.db
+      # Empty means "use the SQLite file above". Set it (or run the postgres
+      # profile) to point the whole stack at PostgreSQL instead.
+      DATABASE_URL: ${DATABASE_URL:-}
+      TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-queued}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-test_webhook_secret}
     volumes:
       - revenue-data:/app/data
+
+  # The queue only drains if something runs the worker. In queued mode this
+  # service is what actually executes approved actions, and it re-runs the
+  # decision engine per task rather than trusting the queued row.
+  worker:
+    build: .
+    command: ["python", "scripts/run_worker.py"]
+    environment:
+      REVENUE_RECOVERY_DATABASE: /app/data/revenue_recovery.db
+      DATABASE_URL: ${DATABASE_URL:-}
+      TASK_EXECUTION_MODE: ${TASK_EXECUTION_MODE:-queued}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+    volumes:
+      - revenue-data:/app/data
+    depends_on:
+      - api
 
   dashboard:
     build: .
@@ -18,5 +40,38 @@ services:
     depends_on:
       - api
 
+  # `docker compose --profile postgres up` brings up the production-shaped stack.
+  # POSTGRES_PASSWORD has no default on purpose: compose fails fast rather than
+  # booting a database with a password that is public knowledge.
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-revenue_recovery}
+      POSTGRES_USER: ${POSTGRES_USER:-revenue}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - revenue-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-revenue} -d ${POSTGRES_DB:-revenue_recovery}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: applies migrations, then exits. Run before api/worker when using
+  # PostgreSQL, since nothing creates tables implicitly on that driver.
+  migrate:
+    build: .
+    profiles: ["postgres"]
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-revenue}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env}@postgres:5432/${POSTGRES_DB:-revenue_recovery}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   revenue-data:
+  revenue-postgres:

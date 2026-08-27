@@ -64,11 +64,30 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 10 — Production Gateway Adapter & Webhook Ingestion.** The repository includes the complete system featuring a pluggable Gateway Adapter interface (`BaseGatewayAdapter` & `RazorpayAdapter`) supporting HMAC-SHA256 signature verification, normalized event conversion, dedicated FastAPI webhook endpoints (`POST /webhooks/razorpay`), webhook test simulation scripts, and Streamlit Control Center integration.
+**Phase 11 — Production Persistence & Durable Background Execution.** Storage moved
+from direct `sqlite3` calls to a dialect-neutral SQLAlchemy Core layer that serves
+SQLite (local dev, tests, CI) and PostgreSQL (production) from one code path, with
+Alembic owning schema changes. Approved recovery actions are no longer executed
+inside the ingesting request: they are written to a durable `tasks` table and
+executed by a separate worker process, so a retry scheduled 24 hours out survives a
+restart and a slow provider cannot block webhook ingestion.
 
-The policy learner remains offline-only. Docker and CI package and verify the system; synthetic data and live/simulated webhook ingestion are fully supported.
+The worker re-runs the deterministic decision engine immediately before executing
+anything, so a queued row is a record of a past approval, not authority to act — the
+retry cap, high-value escalation, incident suppression, and the `FRAUD_RISK_DECLINE`
+hard stop all still apply at execution time.
 
+Phase 10 remains in place: a pluggable Gateway Adapter interface
+(`BaseGatewayAdapter` & `RazorpayAdapter`) with HMAC-SHA256 signature verification,
+normalized event conversion, `POST /webhooks/razorpay`, webhook simulation scripts,
+and Streamlit Control Center integration.
 
+The policy learner remains offline-only. Docker and CI package and verify the
+system; synthetic data and simulated webhook ingestion are fully supported.
+
+Not yet done: the API has no authentication (Phase 12), and structured logging,
+backups, secrets management, and webhook fail-closed behaviour are outstanding
+(Phase 14).
 
 ## Local Setup
 
@@ -85,11 +104,51 @@ python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py
 ```
 
-The synthetic batch writes to the ignored local SQLite database by default. Its output is simulated and must not be presented as commercial performance.
+The synthetic batch writes to the ignored local SQLite database by default. Its
+output is simulated and must not be presented as commercial performance.
 
-The committed model metadata in `models/recovery_model_metadata.json` reports held-out synthetic evaluation, leakage exclusions, group separation, error counts, and coefficient-based explanations.
+### Database and migrations
 
-Operational endpoints include `/operational-metrics` and `/drift`. GitHub Actions runs the test suite, model training check, and experiment report on pushes and pull requests.
+SQLite is the default and needs no setup. To run on PostgreSQL, set `DATABASE_URL`
+and apply the migrations first — the application refuses to create tables on a
+non-SQLite driver, so an unmigrated production database fails loudly instead of
+silently drifting from the migration history:
+
+```text
+export DATABASE_URL=postgresql+psycopg://user:password@host:5432/revenue_recovery
+python -m pip install -e ".[postgres]"
+python -m alembic upgrade head
+```
+
+`postgres://`, `postgresql://`, and `postgresql+psycopg://` are all accepted and
+normalized to the psycopg driver. An existing SQLite database created before this
+phase should be stamped rather than upgraded: `python -m alembic stamp head`.
+
+### Background worker
+
+Set `TASK_EXECUTION_MODE=queued` and run the worker alongside the API:
+
+```text
+python scripts/run_worker.py            # long-running poller
+python scripts/run_worker.py --once     # drain due work and exit
+```
+
+`docker compose up --build` starts the API, the worker, and the dashboard.
+`docker compose --profile postgres up` adds PostgreSQL and a one-shot `migrate`
+service; it requires `POSTGRES_PASSWORD` to be set and refuses to start without it.
+
+In the default `inline` mode the ingesting request still executes the action, which
+is what the recorded synthetic baselines were measured with. Both modes share one
+execution path, so switching does not change what happens to a payment.
+
+The committed model metadata in `models/recovery_model_metadata.json` reports
+held-out synthetic evaluation, leakage exclusions, group separation, error counts,
+and coefficient-based explanations.
+
+Operational endpoints include `/operational-metrics`, `/drift`, `/tasks/stats`, and
+`/tasks/run-due`. GitHub Actions runs the test suite, an `alembic upgrade` plus
+schema-drift check, the model training check, and the experiment report on pushes
+and pull requests.
 
 ## Roadmap
 
@@ -118,6 +177,11 @@ The blueprint's 32 capability items are requirements grouped into these phases; 
 
 No application dependencies are installed or declared during Phase 0.
 
+Later revisions: SQLite is now the development and test database rather than the
+only one — SQLAlchemy Core plus Alembic serve SQLite and PostgreSQL from one code
+path (Phase 11). Background execution uses a database-backed queue and a worker
+process rather than a message broker, keeping the deployment to one extra process.
+
 ## LLM Boundary
 
 The LLM is not a financial decision maker. It may only:
@@ -134,6 +198,9 @@ It may not choose or execute recovery actions, change amounts or financial param
 - Retry counts and customer-contact frequency must be capped.
 - Duplicate `(payment_id, attempt_id)` events must not create duplicate actions.
 - Active bank or gateway incidents may suppress retries.
+- Queued work carries no authority of its own: the decision engine is re-run before
+  any action executes, so nothing can reach a financial side effect without passing
+  the guardrails at that moment.
 - Every decision must be deterministic, explainable, and auditable.
 - Secrets and real payment credentials must never be committed.
 
