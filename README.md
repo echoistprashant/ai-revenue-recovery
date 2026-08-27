@@ -64,9 +64,9 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 4 — System Intelligence and Guardrails.** The repository now contains a centralized deterministic decision engine, fraud and retry hard stops, high-value escalation, contact cooldown enforcement, gateway incident detection, and retry suppression in addition to the recovery, scoring, and optimization layers.
+**Phase 5 — GenAI Layer.** The repository now includes bounded customer communication and a read-only Revenue Analyst over the recovery, scoring, optimization, guardrail, and deterministic decision layers.
 
-LLM integrations and the general experimentation engine are not implemented yet. All action selection now flows through the deterministic decision engine; the LLM has no role in it.
+The general experimentation engine is not implemented yet. All action selection flows through the deterministic decision engine; the language layer can only word an approved action or summarize approved analytics-tool results.
 
 ## Local Setup
 

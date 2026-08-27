@@ -53,3 +53,16 @@ def test_decision_and_gateway_health_endpoints(service) -> None:
     })
     assert incident.status_code == 200
     assert incident.json()["incident_active"] is True
+
+
+def test_bounded_communication_and_analyst_endpoints(service, event_payload: dict) -> None:
+    client = TestClient(create_app(service))
+    client.post("/events", json=event_payload)
+    communication = client.post("/communication", json={
+        "action": "STOP_RECOVERY", "failure_category": "FRAUD_RISK_DECLINE", "amount": 100,
+    })
+    assert communication.status_code == 200
+    assert communication.json()["action"] == "STOP_RECOVERY"
+    analyst = client.post("/analyst", json={"question": "what is the recovery rate?"})
+    assert analyst.status_code == 200
+    assert "Source: get_recovery_metrics" in analyst.json()["answer"]

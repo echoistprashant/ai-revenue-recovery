@@ -170,3 +170,22 @@ class GatewayHealthResponse(BaseModel):
     observed_failure_rate: float
     failure_multiplier: float
     incident_active: bool
+
+
+class CommunicationRequest(BaseModel):
+    action: RecoveryAction
+    failure_category: FailureCategory
+    amount: float = Field(gt=0)
+
+
+class CommunicationResponse(BaseModel):
+    message: str
+    action: RecoveryAction
+
+
+class AnalystRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+
+
+class AnalystResponse(BaseModel):
+    answer: str
