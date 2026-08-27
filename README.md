@@ -64,9 +64,9 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 6 — Experimentation Engine.** The repository now includes reproducible A/B strategy comparison, confidence intervals, significance reporting, and what-if projections over the recovery, scoring, optimization, guardrail, decision, and bounded language layers.
+**Phase 7 — Advanced AI (Optional).** The repository includes an offline contextual-bandit-style policy learner evaluated against the deterministic policy, while all hard guardrails remain authoritative.
 
-Advanced policy learning and production infrastructure are not implemented yet. Experimentation is isolated from financial execution and cannot alter live decisions.
+Production infrastructure is not implemented yet. The learned policy is offline-only, cannot modify deployment, and cannot override fraud, retry, value, or incident guardrails.
 
 ## Local Setup
 
@@ -76,6 +76,7 @@ python -m pytest
 python scripts/train_recovery_model.py
 python scripts/evaluate_optimization.py
 python scripts/run_experiment.py
+python scripts/evaluate_policy.py
 python scripts/run_synthetic_batch.py --count 200
 python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py
