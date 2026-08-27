@@ -64,9 +64,21 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 0 — Project Initialization.** The repository currently contains documentation, architecture decisions, security defaults, and Git workflow foundations only.
+**Phase 1 — Core Payment Recovery.** The repository now contains the non-ML baseline: typed event ingestion, SQLite persistence, failure classification, idempotency, a fixed retry schedule, deterministic simulated outcomes, audit records, basic metrics, a reproducible synthetic batch, and a minimal dashboard.
 
-The application has **not** been implemented. There are currently no payment APIs, database tables, payment simulators, classifiers, ML models, decision rules, action executors, dashboards, or LLM integrations.
+Machine-learning scoring, personalized optimization, advanced guardrails and incident detection, LLM integrations, and experimentation are not implemented yet.
+
+## Local Setup
+
+```text
+python -m pip install -e ".[dev]"
+python -m pytest
+python scripts/run_synthetic_batch.py --count 200
+python -m uvicorn revenue_recovery.api:app --reload
+python -m streamlit run dashboard/app.py
+```
+
+The synthetic batch writes to the ignored local SQLite database by default. Its output is simulated and must not be presented as commercial performance.
 
 ## Roadmap
 
