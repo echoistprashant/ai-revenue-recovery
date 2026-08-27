@@ -64,9 +64,9 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 3 — Recovery Optimization.** The repository contains the recovery baseline and scoring layer plus explainable customer-specific retry-window and payment-method recommendations with confidence, cold-start fallbacks, and a same-population optimization comparison.
+**Phase 4 — System Intelligence and Guardrails.** The repository now contains a centralized deterministic decision engine, fraud and retry hard stops, high-value escalation, contact cooldown enforcement, gateway incident detection, and retry suppression in addition to the recovery, scoring, and optimization layers.
 
-The centralized decision engine, advanced guardrails and incident detection, LLM integrations, and general experimentation engine are not implemented yet. Phase 3 produces recommendations and measured simulated comparisons but does not execute financial actions.
+LLM integrations and the general experimentation engine are not implemented yet. All action selection now flows through the deterministic decision engine; the LLM has no role in it.
 
 ## Local Setup
 

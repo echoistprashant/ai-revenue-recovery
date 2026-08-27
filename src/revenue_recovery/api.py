@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException, status
 
+from revenue_recovery.anomaly import gateway_health
 from revenue_recovery.config import DEFAULT_SETTINGS
 from revenue_recovery.database import Database
-from revenue_recovery.models import OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
+from revenue_recovery.models import DecisionRequest, DecisionResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
 from revenue_recovery.optimization import PaymentHistory, recommend_payment_method, recommend_retry_window
 from revenue_recovery.service import PaymentRecoveryService, UnsupportedFailureCodeError
 
@@ -10,6 +12,7 @@ from revenue_recovery.service import PaymentRecoveryService, UnsupportedFailureC
 def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
     recovery_service = service or PaymentRecoveryService(Database(DEFAULT_SETTINGS.database_path), DEFAULT_SETTINGS)
     app = FastAPI(title="AI Revenue Recovery", version="0.1.0")
+    decision_engine = DecisionEngine()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -50,6 +53,32 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
             method_confidence=method.confidence,
             method_reason=method.reason,
         )
+
+    @app.post("/decisions", response_model=DecisionResponse)
+    def decide(request: DecisionRequest) -> DecisionResponse:
+        decision = decision_engine.decide(DecisionContext(
+            category=request.failure_category,
+            amount=request.amount,
+            retry_count=request.retry_count,
+            recovery_probability=request.recovery_probability,
+            incident_active=request.incident_active,
+            last_contact_at=request.last_contact_at,
+            recommended_method=request.recommended_method.value if request.recommended_method else None,
+            retry_after_hours=request.retry_after_hours,
+        ))
+        return DecisionResponse(
+            action=decision.action,
+            reason=decision.reason,
+            guardrail_rule=decision.guardrail.rule,
+            guardrail_reason=decision.guardrail.reason,
+        )
+
+    @app.post("/gateway-health", response_model=GatewayHealthResponse)
+    def health_check(request: GatewayHealthRequest) -> GatewayHealthResponse:
+        return GatewayHealthResponse(**gateway_health(
+            request.bank, request.gateway, request.failures, request.total,
+            request.baseline_failure_rate,
+        ).__dict__)
 
     return app
 

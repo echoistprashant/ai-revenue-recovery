@@ -28,6 +28,16 @@ class BaselineAction(StrEnum):
     STOP_RECOVERY = "STOP_RECOVERY"
 
 
+class RecoveryAction(StrEnum):
+    RETRY_NOW = "RETRY_NOW"
+    RETRY_LATER = "RETRY_LATER"
+    CHANGE_PAYMENT_METHOD = "CHANGE_PAYMENT_METHOD"
+    SEND_NOTIFICATION = "SEND_NOTIFICATION"
+    SUPPRESS_RETRY = "SUPPRESS_RETRY"
+    ESCALATE_TO_HUMAN = "ESCALATE_TO_HUMAN"
+    STOP_RECOVERY = "STOP_RECOVERY"
+
+
 class PaymentEventCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -61,7 +71,7 @@ class ProcessedEvent(BaseModel):
     payment_id: str
     attempt_id: str
     failure_category: FailureCategory
-    action: BaselineAction
+    action: RecoveryAction
     retry_delay_hours: int | None
     reason: str
     recovered: bool | None
@@ -119,3 +129,44 @@ class OptimizationResponse(BaseModel):
     method_sample_size: int
     method_confidence: float
     method_reason: str
+
+
+class DecisionRequest(BaseModel):
+    failure_category: FailureCategory
+    amount: float = Field(gt=0)
+    retry_count: int = Field(ge=0)
+    recovery_probability: float = Field(ge=0, le=1)
+    incident_active: bool = False
+    last_contact_at: datetime | None = None
+    recommended_method: PaymentMethod | None = None
+    retry_after_hours: int | None = Field(default=None, ge=0, le=168)
+
+
+class DecisionResponse(BaseModel):
+    action: str
+    reason: str
+    guardrail_rule: str | None
+    guardrail_reason: str
+
+
+class GatewayHealthRequest(BaseModel):
+    bank: str
+    gateway: str
+    failures: int = Field(ge=0)
+    total: int = Field(ge=0)
+    baseline_failure_rate: float = Field(default=0.02, gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "GatewayHealthRequest":
+        if self.failures > self.total:
+            raise ValueError("failures cannot exceed total")
+        return self
+
+
+class GatewayHealthResponse(BaseModel):
+    bank: str
+    gateway: str
+    baseline_failure_rate: float
+    observed_failure_rate: float
+    failure_multiplier: float
+    incident_active: bool

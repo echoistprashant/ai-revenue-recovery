@@ -1,10 +1,12 @@
 import sqlite3
 
-from revenue_recovery.baseline import select_baseline_action, simulate_outcome
+from revenue_recovery.baseline import simulate_outcome
 from revenue_recovery.classification import classify_failure
 from revenue_recovery.config import Settings
 from revenue_recovery.database import Database
-from revenue_recovery.models import BaselineAction, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
+from revenue_recovery.guardrails import evaluate_guardrails
+from revenue_recovery.models import PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics
 from revenue_recovery.scoring import RecoveryScorer
 
 
@@ -18,6 +20,7 @@ class PaymentRecoveryService:
         self.settings = settings
         self.database.initialize()
         self.scorer = RecoveryScorer(settings.recovery_model_path) if settings.recovery_model_path.exists() else None
+        self.decision_engine = DecisionEngine()
 
     def process_event(self, event: PaymentEventCreate) -> ProcessedEvent:
         try:
@@ -25,17 +28,19 @@ class PaymentRecoveryService:
         except ValueError as exc:
             raise UnsupportedFailureCodeError(str(exc)) from exc
 
-        decision = select_baseline_action(category, event.retry_count, self.settings.retry_delays_hours)
-        recovered = (
-            simulate_outcome(category, event.payment_id, event.retry_count)
-            if decision.action is BaselineAction.RETRY_LATER
-            else None
-        )
-        score = (
-            self.scorer.score(event, category, self.settings.assumed_remaining_months)
-            if self.scorer
-            else None
-        )
+        preliminary_guardrail = evaluate_guardrails(category, event.amount, event.retry_count, False, None)
+        score = None
+        if preliminary_guardrail.allowed and self.scorer:
+            score = self.scorer.score(event, category, self.settings.assumed_remaining_months)
+        decision = self.decision_engine.decide(DecisionContext(
+            category=category,
+            amount=event.amount,
+            retry_count=event.retry_count,
+            recovery_probability=score.recovery_probability if score else 0.0,
+        ))
+        action = RecoveryAction(decision.action)
+        retry_delay_hours = self.settings.retry_delays_hours[min(event.retry_count, len(self.settings.retry_delays_hours) - 1)] if action is RecoveryAction.RETRY_LATER else None
+        recovered = simulate_outcome(category, event.payment_id, event.retry_count) if action in {RecoveryAction.RETRY_NOW, RecoveryAction.RETRY_LATER} else None
 
         with self.database.connect() as connection:
             existing = connection.execute(
@@ -63,7 +68,7 @@ class PaymentRecoveryService:
             event_id = cursor.lastrowid
             connection.execute(
                 "INSERT INTO decisions (event_id, action, retry_delay_hours, reason) VALUES (?, ?, ?, ?)",
-                (event_id, decision.action.value, decision.retry_delay_hours, decision.reason),
+                (event_id, action.value, retry_delay_hours, decision.reason),
             )
             if score:
                 connection.execute(
@@ -91,7 +96,7 @@ class PaymentRecoveryService:
             )
             self.database.audit(connection, event_id, "EVENT_PROCESSED", {
                 "failure_category": category.value,
-                "action": decision.action.value,
+                "action": action.value,
                 "reason": decision.reason,
                 "final_state": final_state,
                 "recovery_probability": score.recovery_probability if score else None,
@@ -105,8 +110,8 @@ class PaymentRecoveryService:
                 payment_id=event.payment_id,
                 attempt_id=event.attempt_id,
                 failure_category=category,
-                action=decision.action,
-                retry_delay_hours=decision.retry_delay_hours,
+                action=action,
+                retry_delay_hours=retry_delay_hours,
                 reason=decision.reason,
                 recovered=recovered,
                 recovery_probability=score.recovery_probability if score else None,
@@ -131,7 +136,7 @@ class PaymentRecoveryService:
         ).fetchone()
         return ProcessedEvent(
             event_id=row["event_id"], payment_id=row["payment_id"], attempt_id=row["attempt_id"],
-            failure_category=row["failure_category"], action=row["action"],
+            failure_category=row["failure_category"], action=RecoveryAction(row["action"]),
             retry_delay_hours=row["retry_delay_hours"], reason=row["reason"],
             recovered=None if row["recovered"] is None else bool(row["recovered"]), duplicate=duplicate,
             recovery_probability=row["recovery_probability"], churn_risk=row["churn_risk"],

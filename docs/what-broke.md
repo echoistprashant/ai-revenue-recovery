@@ -75,4 +75,52 @@ What should future development learn from this issue?
 
 ## Issue Log
 
-No development issue has been recorded yet.
+## Issue #1 — Small Incident Window Caused a False Positive
+
+### Phase
+
+Phase 4 — System Intelligence and Guardrails
+
+### Date
+
+2026-08-27
+
+### Status
+
+FIXED
+
+### Severity
+
+MEDIUM
+
+### 1. Problem
+
+The incident test classified one failure among ten events as an active systemic incident.
+
+### 2. Expected Behavior
+
+A small sample should not trigger gateway-wide retry suppression.
+
+### 3. Actual Behavior
+
+The observed 10% rate exceeded three times the 2% baseline and activated the incident rule.
+
+### 4. Reproduction
+
+Evaluate gateway health with one failure, ten total events, a 2% baseline, and a 3x multiplier.
+
+### 5. Root Cause
+
+The default minimum evidence window was only ten events, allowing normal small-sample variation to dominate the multiplier.
+
+### 6. Fix
+
+The minimum default incident window was increased to twenty events.
+
+### 7. Verification
+
+The false-positive test and incident activation/recovery tests pass within the 37-test suite.
+
+### 8. Lesson
+
+Rate multipliers need a minimum sample requirement; relative thresholds alone are unsafe on sparse traffic.

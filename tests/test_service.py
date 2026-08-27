@@ -1,9 +1,9 @@
-from revenue_recovery.models import BaselineAction, PaymentEventCreate
+from revenue_recovery.models import PaymentEventCreate, RecoveryAction
 
 
 def test_processes_event_and_records_metrics(service, event_payload: dict) -> None:
     result = service.process_event(PaymentEventCreate.model_validate(event_payload))
-    assert result.action is BaselineAction.RETRY_LATER
+    assert result.action is RecoveryAction.RETRY_LATER
     assert result.retry_delay_hours == 1
     assert result.recovery_probability is not None
     assert result.model_version == "recovery-logistic-v1"
@@ -39,5 +39,5 @@ def test_priority_cases_are_ranked(service, event_payload: dict) -> None:
 def test_fraud_is_not_retried_by_baseline(service, event_payload: dict) -> None:
     event_payload["failure_code"] = "fraud_suspected"
     result = service.process_event(PaymentEventCreate.model_validate(event_payload))
-    assert result.action is BaselineAction.STOP_RECOVERY
+    assert result.action is RecoveryAction.STOP_RECOVERY
     assert result.recovered is None

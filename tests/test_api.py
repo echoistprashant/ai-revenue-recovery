@@ -38,3 +38,18 @@ def test_recommendation_api_is_typed_and_personalized(service) -> None:
     assert result["preferred_hour"] == 20
     assert result["retry_after_hours"] == 10
     assert result["recommended_payment_method"] == "UPI"
+
+
+def test_decision_and_gateway_health_endpoints(service) -> None:
+    client = TestClient(create_app(service))
+    fraud = client.post("/decisions", json={
+        "failure_category": "FRAUD_RISK_DECLINE", "amount": 100, "retry_count": 0,
+        "recovery_probability": 0.99,
+    })
+    assert fraud.status_code == 200
+    assert fraud.json()["action"] == "STOP_RECOVERY"
+    incident = client.post("/gateway-health", json={
+        "bank": "Bank", "gateway": "Gateway", "failures": 8, "total": 20,
+    })
+    assert incident.status_code == 200
+    assert incident.json()["incident_active"] is True
