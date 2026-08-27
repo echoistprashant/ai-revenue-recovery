@@ -1,11 +1,13 @@
 from fastapi import FastAPI, HTTPException, status
+from dataclasses import asdict
 
 from revenue_recovery.anomaly import gateway_health
 from revenue_recovery.config import DEFAULT_SETTINGS
 from revenue_recovery.database import Database
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import AnalystTools, ApprovedCommunication, CommunicationGenerator, RevenueAnalyst
-from revenue_recovery.models import AnalystRequest, AnalystResponse, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
+from revenue_recovery.experimentation import ExperimentEvent, run_experiment
+from revenue_recovery.models import AnalystRequest, AnalystResponse, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics
 from revenue_recovery.optimization import PaymentHistory, recommend_payment_method, recommend_retry_window
 from revenue_recovery.service import PaymentRecoveryService, UnsupportedFailureCodeError
 
@@ -96,6 +98,15 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
             priority=lambda n: [case.model_dump() for case in recovery_service.get_top_priority_cases(n)],
         )
         return AnalystResponse(answer=RevenueAnalyst(tools).answer(request.question))
+
+    @app.post("/experiments", response_model=ExperimentResponse)
+    def experiment(request: ExperimentRequest) -> ExperimentResponse:
+        result = run_experiment(
+            request.experiment_id,
+            [ExperimentEvent(**event.model_dump()) for event in request.events],
+            treatment_lift=request.treatment_lift,
+        )
+        return ExperimentResponse.model_validate(asdict(result))
 
     return app
 

@@ -189,3 +189,34 @@ class AnalystRequest(BaseModel):
 
 class AnalystResponse(BaseModel):
     answer: str
+
+
+class ExperimentEventInput(BaseModel):
+    event_id: str = Field(min_length=1)
+    amount: float = Field(gt=0)
+    latent_recovery_score: float = Field(ge=0, le=1)
+
+
+class ExperimentRequest(BaseModel):
+    experiment_id: str = Field(min_length=1, max_length=100)
+    events: list[ExperimentEventInput] = Field(min_length=2)
+    treatment_lift: float = Field(default=0.12, ge=0, lt=0.5)
+
+
+class VariantMetricsResponse(BaseModel):
+    variant: str
+    sample_size: int
+    recovered_count: int
+    recovery_rate: float
+    recovered_revenue: float
+    unresolved_count: int
+
+
+class ExperimentResponse(BaseModel):
+    experiment_id: str
+    control: VariantMetricsResponse
+    treatment: VariantMetricsResponse
+    recovery_rate_delta: float
+    recovered_revenue_delta: float
+    confidence_interval_95: tuple[float, float]
+    statistically_distinguishable: bool

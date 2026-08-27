@@ -66,3 +66,15 @@ def test_bounded_communication_and_analyst_endpoints(service, event_payload: dic
     analyst = client.post("/analyst", json={"question": "what is the recovery rate?"})
     assert analyst.status_code == 200
     assert "Source: get_recovery_metrics" in analyst.json()["answer"]
+
+
+def test_experiment_endpoint_returns_typed_comparison(service) -> None:
+    response = TestClient(create_app(service)).post("/experiments", json={
+        "experiment_id": "exp-1",
+        "events": [
+            {"event_id": f"e-{i}", "amount": 100 + i, "latent_recovery_score": (i * 37 % 100) / 100}
+            for i in range(20)
+        ],
+    })
+    assert response.status_code == 200
+    assert response.json()["control"]["sample_size"] + response.json()["treatment"]["sample_size"] == 20

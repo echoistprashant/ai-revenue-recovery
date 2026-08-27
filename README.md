@@ -64,9 +64,9 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 5 — GenAI Layer.** The repository now includes bounded customer communication and a read-only Revenue Analyst over the recovery, scoring, optimization, guardrail, and deterministic decision layers.
+**Phase 6 — Experimentation Engine.** The repository now includes reproducible A/B strategy comparison, confidence intervals, significance reporting, and what-if projections over the recovery, scoring, optimization, guardrail, decision, and bounded language layers.
 
-The general experimentation engine is not implemented yet. All action selection flows through the deterministic decision engine; the language layer can only word an approved action or summarize approved analytics-tool results.
+Advanced policy learning and production infrastructure are not implemented yet. Experimentation is isolated from financial execution and cannot alter live decisions.
 
 ## Local Setup
 
@@ -75,6 +75,7 @@ python -m pip install -e ".[dev]"
 python -m pytest
 python scripts/train_recovery_model.py
 python scripts/evaluate_optimization.py
+python scripts/run_experiment.py
 python scripts/run_synthetic_batch.py --count 200
 python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py

@@ -124,3 +124,53 @@ The false-positive test and incident activation/recovery tests pass within the 3
 ### 8. Lesson
 
 Rate multipliers need a minimum sample requirement; relative thresholds alone are unsafe on sparse traffic.
+
+## Issue #2 — Nested Experiment Dataclasses Failed JSON Serialization
+
+### Phase
+
+Phase 6 — Experimentation Engine
+
+### Date
+
+2026-08-27
+
+### Status
+
+FIXED
+
+### Severity
+
+LOW
+
+### 1. Problem
+
+The experiment report script failed after the test suite passed.
+
+### 2. Expected Behavior
+
+The script should print the experiment and what-if report as JSON.
+
+### 3. Actual Behavior
+
+`json.dumps` raised `TypeError: Object of type VariantMetrics is not JSON serializable`.
+
+### 4. Reproduction
+
+Run `python scripts/run_experiment.py` with an `ExperimentResult` containing nested dataclasses.
+
+### 5. Root Cause
+
+Using `result.__dict__` converted only the outer dataclass. Nested `VariantMetrics` objects remained custom Python objects.
+
+### 6. Fix
+
+Use `dataclasses.asdict` for recursive dataclass conversion in both the report script and typed API boundary.
+
+### 7. Verification
+
+The script now prints valid JSON, the typed experiment endpoint validates nested response models, and the full test suite passes.
+
+### 8. Lesson
+
+Unit tests for calculation logic do not replace running user-facing scripts; nested serialization requires an end-to-end check.
