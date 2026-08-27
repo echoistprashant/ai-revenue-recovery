@@ -102,3 +102,7 @@ All synthetic experiments must be clearly labeled as simulated. Synthetic recove
 ## Decision 11 — Operational Control Center Frontend
 
 The user-facing Operational Control Center is implemented using Streamlit (`dashboard/app.py`) backed by an isolated `APIClient` (`dashboard/api_client.py`). The frontend remains strictly presentation and orchestration, while business logic, decision rules, ML scoring, guardrails, and audit logging reside exclusively in the FastAPI backend service.
+
+## Decision 12 — Payment Gateway Adapter Pattern & Signature Security
+
+Provider-specific payment gateway structures (such as Razorpay webhooks) are isolated behind an abstract `BaseGatewayAdapter` interface (`revenue_recovery.adapters`). Cryptographic HMAC-SHA256 signature verification (`X-Razorpay-Signature`) is enforced on webhook listener endpoints (`POST /webhooks/razorpay`) before payload parsing or service processing. Unsigned or invalid signature payloads are rejected with HTTP 401 Unauthorized.

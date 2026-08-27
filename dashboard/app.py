@@ -1,7 +1,10 @@
 import datetime
+import hashlib
+import hmac
 import json
 import os
 import sys
+
 
 import pandas as pd
 import streamlit as st
@@ -144,11 +147,15 @@ if selected_module == "📊 Executive Overview":
 # MODULE 2: PAYMENT OPERATIONS
 # ==============================================================================
 elif selected_module == "💳 Payment Operations":
-    st.subheader("💳 Payment Event Ingestion & Processing")
-    st.caption("Submit a payment failure event to trigger classification, ML feature scoring, guardrail checks, and deterministic action selection.")
+    st.subheader("💳 Payment Event Ingestion & Gateway Adapter")
+    st.caption("Submit payment events directly or ingest signed Razorpay gateway webhooks to trigger classification, ML scoring, guardrail checks, and deterministic actions.")
 
-    st.markdown("#### Quick Fill Scenario Presets")
-    preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
+    tab_internal, tab_webhook = st.tabs(["📝 Internal Schema Form", "🔗 Razorpay Webhook Gateway Adapter"])
+
+    with tab_internal:
+        st.markdown("#### Quick Fill Scenario Presets")
+        preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
+
 
     preset = None
     if preset_col1.button("🟢 Inadequate Funds Event"):
@@ -308,6 +315,86 @@ elif selected_module == "💳 Payment Operations":
 
         except APIClientError as exc:
             st.error(f"Failed to process event: {exc}")
+
+    with tab_webhook:
+        st.markdown("#### 🔗 Signed Razorpay Webhook Ingestion & HMAC Verification")
+        st.caption("Construct and sign a Razorpay gateway webhook payload with HMAC-SHA256 and transmit it to POST /webhooks/razorpay.")
+
+        w_col1, w_col2, w_col3 = st.columns(3)
+        w_event = w_col1.selectbox("Razorpay Event", ["payment.failed", "subscription.halted", "payment.authorized"])
+        w_err_code = w_col2.selectbox(
+            "Razorpay Error Code",
+            [
+                "BAD_REQUEST_PAYMENT_ACCOUNT_INSUFFICIENT_BALANCE",
+                "BAD_REQUEST_PAYMENT_CARD_EXPIRED",
+                "BAD_REQUEST_PAYMENT_CARD_INVALID",
+                "BAD_REQUEST_PAYMENT_AUTHENTICATION_FAILED",
+                "GATEWAY_ERROR",
+                "FRAUD_RISK_DECLINE",
+                "BAD_REQUEST_PAYMENT_DECLINED_BY_BANK",
+            ],
+        )
+        w_amount_paise = w_col3.number_input("Amount (Paise)", value=249900, min_value=100)
+
+        w_col4, w_col5 = st.columns(2)
+        w_pid = w_col4.text_input("Payment ID", value=f"pay_rzp_live_{datetime.datetime.now().strftime('%M%S')}")
+        w_secret = w_col5.text_input("Webhook Secret", value="test_webhook_secret")
+
+        sample_webhook = {
+            "entity": "event",
+            "account_id": "acc_sim_rzp_01",
+            "event": w_event,
+            "contains": ["payment"],
+            "payload": {
+                "payment": {
+                    "entity": {
+                        "id": w_pid,
+                        "entity": "payment",
+                        "amount": w_amount_paise,
+                        "currency": "INR",
+                        "status": "failed",
+                        "method": "card",
+                        "bank": "HDFC",
+                        "error_code": w_err_code,
+                        "notes": {
+                            "customer_id": "cust_rzp_web_1",
+                            "subscription_id": "sub_rzp_web_1",
+                            "attempt_id": "att_1",
+                            "previous_success_count": 4,
+                            "previous_failure_count": 1,
+                            "customer_age_days": 150,
+                            "subscription_value": w_amount_paise / 100.0,
+                            "retry_count": 0,
+                        },
+                        "created_at": int(datetime.datetime.now().timestamp()),
+                    }
+                }
+            },
+            "created_at": int(datetime.datetime.now().timestamp()),
+        }
+
+        payload_bytes = json.dumps(sample_webhook, separators=(",", ":")).encode("utf-8")
+        signature = hmac.new(w_secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+
+        st.markdown("##### 🔑 HMAC-SHA256 Cryptographic Signature (`X-Razorpay-Signature`)")
+        st.code(signature, language="text")
+
+        st.markdown("##### 📦 Raw Webhook JSON Payload")
+        st.json(sample_webhook)
+
+        if st.button("Transmit Signed Webhook to /webhooks/razorpay", use_container_width=True):
+            try:
+                with st.spinner("Verifying signature & normalizing payload..."):
+                    wh_res = api_client.send_razorpay_webhook(payload_bytes, signature)
+
+                st.success("✅ Signature Verified & Webhook Ingested Successfully!")
+                st.markdown(f"**Normalized Failure Category**: `{wh_res.get('failure_category')}`")
+                st.markdown(f"**Selected Recovery Action**: `{wh_res.get('action')}`")
+                st.markdown(f"**Decision Reason**: {wh_res.get('reason')}")
+
+            except APIClientError as exc:
+                st.error(f"Webhook Ingestion Failed: {exc}")
+
 
 # ==============================================================================
 # MODULE 3: PRIORITY CASES

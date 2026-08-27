@@ -72,3 +72,10 @@ class APIClient:
 
     def check_drift(self, drift_data: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/drift", json=drift_data)
+
+    def send_razorpay_webhook(self, raw_payload: bytes, signature: str) -> dict[str, Any]:
+        headers = {
+            "Content-Type": "application/json",
+            "X-Razorpay-Signature": signature,
+        }
+        return self._request("POST", "/webhooks/razorpay", data=raw_payload, headers=headers)

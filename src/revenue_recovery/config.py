@@ -10,6 +10,7 @@ class Settings:
     synthetic_seed: int = 20260827
     assumed_remaining_months: int = 6
     recovery_model_path: Path = Path("models/recovery_model.joblib")
+    razorpay_webhook_secret: str = os.getenv("RAZORPAY_WEBHOOK_SECRET", "test_webhook_secret")
 
 
 DEFAULT_SETTINGS = Settings()

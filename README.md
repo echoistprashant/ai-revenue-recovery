@@ -64,9 +64,10 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 9 — Full Frontend & Operational Control Center.** The repository includes the complete system paired with an operational Streamlit Control Center (`dashboard/app.py`). The interface exposes payment ingestion, failure classification, ML recovery scoring, priority case drill-downs, deterministic decisioning, guardrail visualizers, recovery optimization recommendations, gateway anomaly checks, bounded LLM customer messaging, read-only AI analyst, experimentation, monitoring, and decision audit history.
+**Phase 10 — Production Gateway Adapter & Webhook Ingestion.** The repository includes the complete system featuring a pluggable Gateway Adapter interface (`BaseGatewayAdapter` & `RazorpayAdapter`) supporting HMAC-SHA256 signature verification, normalized event conversion, dedicated FastAPI webhook endpoints (`POST /webhooks/razorpay`), webhook test simulation scripts, and Streamlit Control Center integration.
 
-The policy learner remains offline-only. Docker and CI package and verify the system; all metrics use reproducible synthetic simulation data.
+The policy learner remains offline-only. Docker and CI package and verify the system; synthetic data and live/simulated webhook ingestion are fully supported.
+
 
 
 ## Local Setup

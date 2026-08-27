@@ -1,9 +1,11 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from dataclasses import asdict
 from time import perf_counter
 
+from revenue_recovery.adapters import RazorpayAdapter
 from revenue_recovery.anomaly import gateway_health
 from revenue_recovery.config import DEFAULT_SETTINGS
+
 from revenue_recovery.database import Database
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import AnalystTools, ApprovedCommunication, CommunicationGenerator, RevenueAnalyst
@@ -45,6 +47,26 @@ def create_app(service: PaymentRecoveryService | None = None) -> FastAPI:
             return recovery_service.process_event(event)
         except UnsupportedFailureCodeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/webhooks/razorpay", response_model=ProcessedEvent, status_code=status.HTTP_201_CREATED)
+    async def razorpay_webhook(
+        request: Request,
+        x_razorpay_signature: str | None = Header(default=None),
+    ) -> ProcessedEvent:
+        body = await request.body()
+        adapter = RazorpayAdapter()
+        secret = recovery_service.settings.razorpay_webhook_secret
+        if not x_razorpay_signature or not adapter.verify_signature(body, x_razorpay_signature, secret):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Razorpay webhook signature")
+        try:
+            payload = await request.json()
+            event = adapter.normalize_event(payload)
+            return recovery_service.process_event(event)
+        except UnsupportedFailureCodeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Malformed Razorpay webhook payload: {exc}") from exc
+
 
     @app.get("/metrics", response_model=RecoveryMetrics)
     def metrics() -> RecoveryMetrics:
