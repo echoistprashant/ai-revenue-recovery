@@ -30,10 +30,35 @@ METADATA = MetaData()
 
 TIMESTAMP = String(64)
 
+DEFAULT_TENANT = "default"
+
+# Operator accounts. Passwords are stored only as bcrypt hashes; nothing in this
+# table can be used to sign a token on its own, and no row grants the ability to
+# override a guardrail — role only widens which routes a request may reach.
+users = Table(
+    "users",
+    METADATA,
+    Column("user_id", Integer, primary_key=True, autoincrement=True),
+    Column("username", String(80), nullable=False),
+    Column("password_hash", String(200), nullable=False),
+    Column("role", String(20), nullable=False),
+    Column("tenant_id", String(80), nullable=False, server_default=DEFAULT_TENANT),
+    Column("is_active", Integer, nullable=False, server_default="1"),
+    Column("created_at", TIMESTAMP, nullable=False),
+    Column("last_login_at", TIMESTAMP),
+    CheckConstraint("role IN ('VIEWER', 'OPERATOR', 'ADMIN')", name="ck_users_role_known"),
+    UniqueConstraint("username", name="uq_users_username"),
+    Index("ix_users_tenant_id", "tenant_id"),
+)
+
 payment_events = Table(
     "payment_events",
     METADATA,
     Column("event_id", Integer, primary_key=True, autoincrement=True),
+    # Every event belongs to exactly one tenant. Reads are filtered by it rather
+    # than relying on callers to remember, so one tenant's operator cannot see or
+    # resolve another tenant's cases.
+    Column("tenant_id", String(80), nullable=False, server_default=DEFAULT_TENANT),
     Column("payment_id", String(100), nullable=False),
     Column("attempt_id", String(100), nullable=False),
     Column("customer_id", String(100), nullable=False),
@@ -53,10 +78,14 @@ payment_events = Table(
     Column("retry_count", Integer, nullable=False),
     Column("created_at", TIMESTAMP, nullable=False),
     CheckConstraint("amount > 0", name="ck_payment_events_amount_positive"),
-    UniqueConstraint("payment_id", "attempt_id", name="uq_payment_events_payment_attempt"),
+    # Idempotency is scoped to the tenant: a gateway identifier only has meaning
+    # inside the account that issued it, and a global key would let one tenant
+    # discover another's payment IDs through the duplicate response.
+    UniqueConstraint("tenant_id", "payment_id", "attempt_id", name="uq_payment_events_tenant_payment_attempt"),
     Index("ix_payment_events_customer_id", "customer_id"),
     Index("ix_payment_events_failure_category", "failure_category"),
     Index("ix_payment_events_created_at", "created_at"),
+    Index("ix_payment_events_tenant_id", "tenant_id"),
 )
 
 decisions = Table(
@@ -80,6 +109,10 @@ outcomes = Table(
     Column("recovered_amount", Float, nullable=False, default=0.0),
     Column("final_state", String(30), nullable=False),
     Column("created_at", TIMESTAMP, nullable=False),
+    # Set only when a human closes an escalated case. Who acted is part of the
+    # record, not just the fact that something changed.
+    Column("resolved_by", String(80)),
+    Column("resolved_at", TIMESTAMP),
     Index("ix_outcomes_final_state", "final_state"),
 )
 
@@ -136,4 +169,4 @@ tasks = Table(
     Index("ix_tasks_status_run_at", "status", "run_at"),
 )
 
-ALL_TABLES = (payment_events, decisions, outcomes, audit_log, scores, tasks)
+ALL_TABLES = (payment_events, decisions, outcomes, audit_log, scores, tasks, users)

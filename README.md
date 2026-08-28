@@ -64,18 +64,36 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 11 — Production Persistence & Durable Background Execution.** Storage moved
-from direct `sqlite3` calls to a dialect-neutral SQLAlchemy Core layer that serves
-SQLite (local dev, tests, CI) and PostgreSQL (production) from one code path, with
-Alembic owning schema changes. Approved recovery actions are no longer executed
-inside the ingesting request: they are written to a durable `tasks` table and
-executed by a separate worker process, so a retry scheduled 24 hours out survives a
-restart and a slow provider cannot block webhook ingestion.
+**Phase 12 — Authentication, Roles, Tenant Isolation & Human Review.** Every route
+except `/health` and the HMAC-signed gateway webhook now requires a bearer token.
+Roles are ranked (`VIEWER` < `OPERATOR` < `ADMIN`): reads need `VIEWER`; ingesting
+events, resolving escalations, generating customer messages, and flushing the queue
+need `OPERATOR`; account management needs `ADMIN`. The account row is re-read on every
+request, so deactivating or demoting an account takes effect on its next call rather
+than at token expiry. Payment events carry a `tenant_id` and every read is scoped to
+the caller's tenant; the idempotency key became `(tenant_id, payment_id, attempt_id)`.
 
-The worker re-runs the deterministic decision engine immediately before executing
-anything, so a queued row is a record of a past approval, not authority to act — the
-retry cap, high-value escalation, incident suppression, and the `FRAUD_RISK_DECLINE`
-hard stop all still apply at execution time.
+The high-value escalation guardrail finally has somewhere to escalate *to*: a human
+review queue (`GET /review-queue`, `POST /review-queue/{event_id}/resolve`) with a
+reviewer UI. A reviewer's approval is an input, not an authority — `MANUAL_RETRY`
+re-runs the deterministic decision engine, which can still withhold the retry. The
+`human_review_approved` flag satisfies exactly one guardrail, the high-value review
+that exists to wait for a person, and is checked *after* the fraud hard stop and the
+retry cap. **No role, including `ADMIN`, can retry a `FRAUD_RISK_DECLINE` or exceed the
+retry cap.**
+
+The dashboard has a login gate, a role-aware menu, per-case audit-trail drill-down, the
+review queue, and user administration. In production the API refuses to boot without a
+`JWT_SECRET_KEY` of at least 32 characters, refuses plain HTTP with 403 rather than a
+token-leaking redirect, and rate-limits every route with a tighter budget for login.
+
+**Phase 11 remains in place.** Storage is a dialect-neutral SQLAlchemy Core layer
+serving SQLite (local dev, tests, CI) and PostgreSQL (production) from one code path,
+with Alembic owning schema changes. Approved recovery actions are written to a durable
+`tasks` table and executed by a separate worker process, so a retry scheduled 24 hours
+out survives a restart and a slow provider cannot block webhook ingestion. The worker
+re-runs the decision engine immediately before executing anything, so a queued row is
+a record of a past approval, not authority to act.
 
 Phase 10 remains in place: a pluggable Gateway Adapter interface
 (`BaseGatewayAdapter` & `RazorpayAdapter`) with HMAC-SHA256 signature verification,
@@ -85,9 +103,9 @@ and Streamlit Control Center integration.
 The policy learner remains offline-only. Docker and CI package and verify the
 system; synthetic data and simulated webhook ingestion are fully supported.
 
-Not yet done: the API has no authentication (Phase 12), and structured logging,
-backups, secrets management, and webhook fail-closed behaviour are outstanding
-(Phase 14).
+Not yet done (Phase 14): structured logging, backups, secrets-manager integration,
+PII controls, webhook replay protection, and a webhook secret that fails closed
+instead of defaulting to a publicly known value.
 
 ## Local Setup
 
@@ -106,6 +124,36 @@ python -m streamlit run dashboard/app.py
 
 The synthetic batch writes to the ignored local SQLite database by default. Its
 output is simulated and must not be presented as commercial performance.
+
+### First sign-in
+
+The API and dashboard require an account, and the first one is created from the
+command line — there is no default password, because a default password is a public
+one:
+
+```text
+python scripts/create_user.py --username admin --role ADMIN
+python scripts/create_user.py --username analyst --role VIEWER --tenant acme
+python scripts/create_user.py --username admin --role ADMIN --reset-password
+```
+
+The password is read from a no-echo prompt, or from
+`REVENUE_RECOVERY_ADMIN_PASSWORD` for automated provisioning, and only its bcrypt
+hash is stored. Minimum length is 12 characters.
+
+In production, set a signing key or the API will refuse to start:
+
+```text
+export JWT_SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+export APP_ENVIRONMENT=production
+```
+
+In development the key is generated per process instead, so tokens simply stop
+working when the API restarts. Roles: `VIEWER` reads, `OPERATOR` also ingests events,
+resolves escalations, generates messages, and flushes the queue, `ADMIN` also manages
+accounts. See [`.env.example`](.env.example) for `ACCESS_TOKEN_TTL_MINUTES`,
+`RATE_LIMIT_PER_MINUTE`, `LOGIN_RATE_LIMIT_PER_MINUTE`, `ENFORCE_HTTPS`, and
+`DEFAULT_TENANT`.
 
 ### Database and migrations
 
@@ -146,9 +194,11 @@ held-out synthetic evaluation, leakage exclusions, group separation, error count
 and coefficient-based explanations.
 
 Operational endpoints include `/operational-metrics`, `/drift`, `/tasks/stats`, and
-`/tasks/run-due`. GitHub Actions runs the test suite, an `alembic upgrade` plus
-schema-drift check, the model training check, and the experiment report on pushes
-and pull requests.
+`/tasks/run-due`. Authentication and review endpoints are `/auth/token`, `/auth/me`,
+`/auth/users`, `/audit-log`, `/review-queue`, and
+`/review-queue/{event_id}/resolve`. GitHub Actions runs the test suite, an
+`alembic upgrade` plus schema-drift check, the model training check, and the
+experiment report on pushes and pull requests.
 
 ## Roadmap
 
@@ -196,12 +246,17 @@ It may not choose or execute recovery actions, change amounts or financial param
 - Fraud-risk declines must result in `STOP_RECOVERY`.
 - High-value transactions must be escalated according to configuration.
 - Retry counts and customer-contact frequency must be capped.
-- Duplicate `(payment_id, attempt_id)` events must not create duplicate actions.
+- Duplicate `(tenant_id, payment_id, attempt_id)` events must not create duplicate
+  actions.
 - Active bank or gateway incidents may suppress retries.
 - Queued work carries no authority of its own: the decision engine is re-run before
   any action executes, so nothing can reach a financial side effect without passing
   the guardrails at that moment.
-- Every decision must be deterministic, explainable, and auditable.
+- No role overrides a guardrail. A reviewer's approval satisfies only the high-value
+  review that exists to wait for a person; it is evaluated after the fraud hard stop
+  and the retry cap, so neither can be cleared by any role, `ADMIN` included.
+- Every decision must be deterministic, explainable, and auditable, and attributable
+  to the account that requested it.
 - Secrets and real payment credentials must never be committed.
 
 ## Synthetic-Data Disclaimer

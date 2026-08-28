@@ -13,6 +13,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
 
+from revenue_recovery.auth import Role, UserRepository
 from revenue_recovery.config import Settings
 from revenue_recovery.database import Database
 from revenue_recovery.models import PaymentEventCreate
@@ -64,3 +65,25 @@ def test_the_service_runs_against_a_migrated_database(migrated: Database, event_
     processed = service.process_event(PaymentEventCreate(**event_payload))
     assert processed.event_id > 0
     assert service.get_metrics().total_failures == 1
+
+
+def test_migration_scopes_the_idempotency_key_to_the_tenant(migrated: Database) -> None:
+    """The unique key must include ``tenant_id`` in the migrated schema too.
+
+    If the migration kept the old two-column key, two tenants could not both hold a
+    gateway's payment identifier, and the duplicate response would tell one tenant
+    that another had already processed that payment.
+    """
+    constraints = inspect(migrated.engine).get_unique_constraints("payment_events")
+    keys = [set(constraint["column_names"]) for constraint in constraints]
+    assert {"tenant_id", "payment_id", "attempt_id"} in keys
+    assert {"payment_id", "attempt_id"} not in keys
+
+
+def test_accounts_round_trip_against_a_migrated_database(migrated: Database) -> None:
+    """Sign-in works on a migrated database, not only on a create_all one."""
+    users = UserRepository(migrated)
+    created = users.create("migrated-admin", "migration-password-1234", Role.ADMIN, "acme")
+    assert created.tenant_id == "acme"
+    assert users.authenticate("migrated-admin", "migration-password-1234") is not None
+    assert users.authenticate("migrated-admin", "wrong-password-entirely") is None

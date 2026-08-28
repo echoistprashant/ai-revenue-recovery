@@ -42,6 +42,10 @@ class ActionContext:
     retry_count: int
     recovery_probability: float
     incident_active: bool = False
+    # True only when an authorized reviewer resolved an escalated case. It reaches
+    # the high-value guardrail and stops there; the fraud hard stop and the retry
+    # cap are evaluated first and are not affected by it.
+    human_review_approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,7 @@ class ActionExecutor:
             retry_count=context.retry_count,
             recovery_probability=context.recovery_probability,
             incident_active=context.incident_active,
+            human_review_approved=context.human_review_approved,
         ))
         action = RecoveryAction(decision.action)
         if task_type is TaskType.EXECUTE_RETRY:

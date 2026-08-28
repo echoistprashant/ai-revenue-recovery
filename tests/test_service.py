@@ -41,3 +41,31 @@ def test_fraud_is_not_retried_by_baseline(service, event_payload: dict) -> None:
     result = service.process_event(PaymentEventCreate.model_validate(event_payload))
     assert result.action is RecoveryAction.STOP_RECOVERY
     assert result.recovered is None
+
+
+def test_an_escalated_case_carries_the_models_view(service, event_payload: dict) -> None:
+    """A case sent to a person is scored, even though a guardrail blocked it.
+
+    The reviewer needs the probability and priority to decide, the queue is ordered
+    by priority, and the retry they may approve is re-decided from this score — an
+    unscored escalation would sit at probability zero and could never be retried.
+    """
+    high_value = event_payload | {"amount": 60000.0, "subscription_value": 60000.0}
+    result = service.process_event(PaymentEventCreate.model_validate(high_value))
+    assert result.action is RecoveryAction.ESCALATE_TO_HUMAN
+    assert result.recovery_probability is not None
+    assert result.priority_score is not None
+    assert service.get_review_queue()[0].recovery_probability == result.recovery_probability
+
+
+def test_a_stopped_case_is_not_scored(service, event_payload: dict) -> None:
+    """Fraud declines and capped retries are finished, so the model is not consulted.
+
+    Nothing downstream reads their probability, and scoring a case no one may act on
+    would only invite someone to act on it.
+    """
+    fraud = event_payload | {"failure_code": "fraud_suspected"}
+    capped = event_payload | {"payment_id": "pay_capped", "attempt_id": "a_capped", "retry_count": 3}
+    assert service.process_event(PaymentEventCreate.model_validate(fraud)).recovery_probability is None
+    assert service.process_event(PaymentEventCreate.model_validate(capped)).recovery_probability is None
+

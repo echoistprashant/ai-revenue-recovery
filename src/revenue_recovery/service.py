@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import timedelta
+import json
 
 from revenue_recovery.actions import ActionContext, ActionExecutor
 from revenue_recovery.classification import classify_failure
@@ -7,8 +8,8 @@ from revenue_recovery.clock import iso_now, to_iso, utc_now
 from revenue_recovery.config import QUEUED, Settings
 from revenue_recovery.database import Database, DatabaseConnection
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
-from revenue_recovery.guardrails import evaluate_guardrails
-from revenue_recovery.models import EventHistoryItem, FailureCategory, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics
+from revenue_recovery.guardrails import HIGH_VALUE_REVIEW, evaluate_guardrails
+from revenue_recovery.models import AuditEntry, CaseResolution, EventHistoryItem, FailureCategory, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics, ResolveCaseResponse, ReviewCase
 from revenue_recovery.scoring import RecoveryScorer, ScoreResult
 from revenue_recovery.tasks import TaskQueue, TaskType
 from revenue_recovery.worker import RecoveryWorker
@@ -23,6 +24,27 @@ FINAL_STATE_BY_ACTION = {
     RecoveryAction.ESCALATE_TO_HUMAN: "ESCALATED",
     RecoveryAction.CHANGE_PAYMENT_METHOD: "AWAITING_METHOD_UPDATE",
 }
+
+# The only state a reviewer may act on. A fraud decline lands in STOPPED and so is
+# not offered for review at all; that is the first of the two barriers in front of
+# the fraud hard stop, the second being the re-run of the decision engine.
+REVIEWABLE_STATE = "ESCALATED"
+
+
+class CaseNotReviewableError(ValueError):
+    """Raised when a case is not in a state a reviewer may resolve."""
+
+
+def _tenant_filter(tenant_id: str | None, alias: str) -> tuple[str, dict[str, object]]:
+    """Return the ``WHERE`` fragment and bind parameters that scope a read.
+
+    ``None`` means every tenant, which only the worker and the offline scripts use.
+    Every API read passes the authenticated caller's tenant, so a request cannot
+    widen its own scope by omitting a parameter.
+    """
+    if tenant_id is None:
+        return "", {}
+    return f" WHERE {alias}.tenant_id = :tenant_id", {"tenant_id": tenant_id}
 
 
 class UnsupportedFailureCodeError(ValueError):
@@ -56,15 +78,30 @@ class PaymentRecoveryService:
     def queued_execution(self) -> bool:
         return self.settings.task_execution_mode == QUEUED
 
-    def process_event(self, event: PaymentEventCreate) -> ProcessedEvent:
+    def _tenant(self, tenant_id: str | None) -> str:
+        """Resolve the tenant for a write, falling back to the configured default.
+
+        Reads take ``tenant_id=None`` to mean "every tenant", which the worker and
+        the offline scripts need. Writes always land in exactly one tenant.
+        """
+        return tenant_id or self.settings.default_tenant
+
+    def process_event(self, event: PaymentEventCreate, tenant_id: str | None = None) -> ProcessedEvent:
+        tenant = self._tenant(tenant_id)
         try:
             category = classify_failure(event.failure_code)
         except ValueError as exc:
             raise UnsupportedFailureCodeError(str(exc)) from exc
 
         preliminary_guardrail = evaluate_guardrails(category, event.amount, event.retry_count, False, None)
+        # Scoring is skipped for cases that are already finished — a fraud decline or a
+        # capped retry gains nothing from a probability. A high-value escalation is the
+        # exception: it is going to a person, who needs the model's view to decide, and
+        # the retry they may approve is re-decided from this same score. Without it an
+        # escalated case would carry a probability of zero and could never be retried.
+        should_score = preliminary_guardrail.allowed or preliminary_guardrail.rule == HIGH_VALUE_REVIEW
         score = None
-        if preliminary_guardrail.allowed and self.scorer:
+        if should_score and self.scorer:
             score = self.scorer.score(event, category, self.settings.assumed_remaining_months)
         decision = self.decision_engine.decide(DecisionContext(
             category=category,
@@ -77,8 +114,10 @@ class PaymentRecoveryService:
 
         with self.database.connect() as connection:
             existing = connection.fetch_one(
-                "SELECT event_id FROM payment_events WHERE payment_id = :payment_id AND attempt_id = :attempt_id",
-                {"payment_id": event.payment_id, "attempt_id": event.attempt_id},
+                """SELECT event_id FROM payment_events
+                   WHERE tenant_id = :tenant_id AND payment_id = :payment_id
+                     AND attempt_id = :attempt_id""",
+                {"tenant_id": tenant, "payment_id": event.payment_id, "attempt_id": event.attempt_id},
             )
             if existing:
                 return self._load_processed(connection, int(existing["event_id"]), duplicate=True)
@@ -86,17 +125,18 @@ class PaymentRecoveryService:
             created_at = iso_now()
             event_id = connection.insert_returning_id(
                 """INSERT INTO payment_events (
-                    payment_id, attempt_id, customer_id, subscription_id, amount, currency,
+                    tenant_id, payment_id, attempt_id, customer_id, subscription_id, amount, currency,
                     payment_method, gateway, bank, failure_code, failure_category,
                     event_timestamp, previous_success_count, previous_failure_count,
                     customer_age_days, subscription_value, retry_count, created_at
                 ) VALUES (
-                    :payment_id, :attempt_id, :customer_id, :subscription_id, :amount, :currency,
+                    :tenant_id, :payment_id, :attempt_id, :customer_id, :subscription_id, :amount, :currency,
                     :payment_method, :gateway, :bank, :failure_code, :failure_category,
                     :event_timestamp, :previous_success_count, :previous_failure_count,
                     :customer_age_days, :subscription_value, :retry_count, :created_at
                 )""",
                 {
+                    "tenant_id": tenant,
                     "payment_id": event.payment_id, "attempt_id": event.attempt_id,
                     "customer_id": event.customer_id, "subscription_id": event.subscription_id,
                     "amount": event.amount, "currency": event.currency,
@@ -257,16 +297,22 @@ class PaymentRecoveryService:
             model_version=row["model_version"],
         )
 
-    def get_metrics(self) -> RecoveryMetrics:
+    def get_metrics(self, tenant_id: str | None = None) -> RecoveryMetrics:
+        scope, parameters = _tenant_filter(tenant_id, "e")
         with self.database.connect() as connection:
             summary = connection.fetch_one(
                 """SELECT COUNT(*) AS total, COUNT(o.recovered) AS resolved,
                           COALESCE(SUM(CASE WHEN o.recovered = 1 THEN 1 ELSE 0 END), 0) AS recovered,
                           COALESCE(SUM(o.recovered_amount), 0) AS revenue
                    FROM payment_events e JOIN outcomes o ON o.event_id = e.event_id"""
+                + scope,
+                parameters,
             )
             breakdown_rows = connection.fetch_all(
-                "SELECT failure_category, COUNT(*) AS count FROM payment_events GROUP BY failure_category"
+                "SELECT failure_category, COUNT(*) AS count FROM payment_events e"
+                + scope
+                + " GROUP BY failure_category",
+                parameters,
             )
         resolved = int(summary["resolved"]) if summary else 0
         recovered = int(summary["recovered"]) if summary else 0
@@ -279,23 +325,26 @@ class PaymentRecoveryService:
             failure_breakdown={str(row["failure_category"]): int(row["count"]) for row in breakdown_rows},
         )
 
-    def get_top_priority_cases(self, limit: int = 10) -> list[PriorityCase]:
+    def get_top_priority_cases(self, limit: int = 10, tenant_id: str | None = None) -> list[PriorityCase]:
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
+        scope, parameters = _tenant_filter(tenant_id, "e")
         with self.database.connect() as connection:
             rows = connection.fetch_all(
                 """SELECT e.payment_id, e.attempt_id, e.failure_category, e.amount,
                           s.recovery_probability, s.churn_risk, s.revenue_at_risk,
                           s.priority_score, s.model_version
-                   FROM scores s JOIN payment_events e ON e.event_id = s.event_id
-                   ORDER BY s.priority_score DESC, e.event_id ASC LIMIT :limit""",
-                {"limit": limit},
+                   FROM scores s JOIN payment_events e ON e.event_id = s.event_id"""
+                + scope
+                + " ORDER BY s.priority_score DESC, e.event_id ASC LIMIT :limit",
+                parameters | {"limit": limit},
             )
         return [PriorityCase(**dict(row)) for row in rows]
 
-    def get_history(self, limit: int = 50) -> list[EventHistoryItem]:
+    def get_history(self, limit: int = 50, tenant_id: str | None = None) -> list[EventHistoryItem]:
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
+        scope, parameters = _tenant_filter(tenant_id, "e")
         with self.database.connect() as connection:
             rows = connection.fetch_all(
                 """SELECT e.event_id, e.payment_id, e.attempt_id, e.customer_id, e.amount,
@@ -306,9 +355,10 @@ class PaymentRecoveryService:
                    FROM payment_events e
                    JOIN decisions d ON d.event_id = e.event_id
                    JOIN outcomes o ON o.event_id = e.event_id
-                   LEFT JOIN scores s ON s.event_id = e.event_id
-                   ORDER BY e.event_id DESC LIMIT :limit""",
-                {"limit": limit},
+                   LEFT JOIN scores s ON s.event_id = e.event_id"""
+                + scope
+                + " ORDER BY e.event_id DESC LIMIT :limit",
+                parameters | {"limit": limit},
             )
         return [
             EventHistoryItem(
@@ -349,3 +399,244 @@ class PaymentRecoveryService:
         same code path in a loop.
         """
         return self.worker.run_once(now=now).as_dict()
+
+    def get_review_queue(self, limit: int = 50, tenant_id: str | None = None) -> list[ReviewCase]:
+        """Cases the engine escalated and no human has closed yet."""
+        if not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        scope, parameters = _tenant_filter(tenant_id, "e")
+        clause = (scope + " AND " if scope else " WHERE ") + "o.final_state = :state AND o.resolved_at IS NULL"
+        with self.database.connect() as connection:
+            rows = connection.fetch_all(
+                """SELECT e.event_id, e.payment_id, e.attempt_id, e.customer_id, e.amount,
+                          e.currency, e.failure_category, d.action, d.reason, o.final_state,
+                          s.recovery_probability, s.churn_risk, s.revenue_at_risk,
+                          s.priority_score, e.created_at
+                   FROM payment_events e
+                   JOIN decisions d ON d.event_id = e.event_id
+                   JOIN outcomes o ON o.event_id = e.event_id
+                   LEFT JOIN scores s ON s.event_id = e.event_id"""
+                + clause
+                + " ORDER BY COALESCE(s.priority_score, 0) DESC, e.event_id ASC LIMIT :limit",
+                parameters | {"state": REVIEWABLE_STATE, "limit": limit},
+            )
+        return [
+            ReviewCase(
+                event_id=int(row["event_id"]),
+                payment_id=str(row["payment_id"]),
+                attempt_id=str(row["attempt_id"]),
+                customer_id=str(row["customer_id"]),
+                amount=float(row["amount"]),
+                currency=str(row["currency"]),
+                failure_category=FailureCategory(row["failure_category"]),
+                action=RecoveryAction(row["action"]),
+                reason=str(row["reason"]),
+                final_state=str(row["final_state"]),
+                recovery_probability=row["recovery_probability"],
+                churn_risk=row["churn_risk"],
+                revenue_at_risk=row["revenue_at_risk"],
+                priority_score=row["priority_score"],
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def resolve_case(
+        self,
+        event_id: int,
+        resolution: CaseResolution,
+        actor: str,
+        note: str = "",
+        tenant_id: str | None = None,
+    ) -> ResolveCaseResponse:
+        """Close an escalated case on a reviewer's authority.
+
+        ``MANUAL_RETRY`` is the only resolution with a financial side effect, and it
+        does not perform one directly: it goes through ``ActionExecutor``, which
+        re-runs the deterministic decision engine. The reviewer's approval is passed
+        as ``human_review_approved``, which satisfies the high-value escalation
+        guardrail — the guardrail that exists precisely to wait for a person — and
+        reaches nothing else. A fraud decline is refused twice over: it is never in
+        ``ESCALATED`` state to begin with, and the engine would stop it anyway.
+        """
+        with self.database.connect() as connection:
+            case = self._load_case(connection, event_id, tenant_id)
+            category = FailureCategory(case["failure_category"])
+            resolved_at = iso_now()
+            if resolution is CaseResolution.MANUAL_RETRY:
+                response = self._resolve_by_retry(connection, case, category, actor, resolved_at)
+            else:
+                response = self._resolve_by_record(connection, case, resolution, actor, resolved_at)
+            self.database.audit(connection, event_id, "CASE_RESOLVED", {
+                "resolution": resolution.value,
+                "resolved_by": actor,
+                "note": note,
+                "final_state": response.final_state,
+                "recovered": response.recovered,
+                "executed": response.executed,
+                "detail": response.detail,
+                "failure_category": category.value,
+            })
+        return response
+
+    def _load_case(self, connection: DatabaseConnection, event_id: int, tenant_id: str | None) -> dict:
+        scope, parameters = _tenant_filter(tenant_id, "e")
+        clause = (scope + " AND " if scope else " WHERE ") + "e.event_id = :event_id"
+        row = connection.fetch_one(
+            """SELECT e.event_id, e.amount, e.payment_id, e.retry_count, e.failure_category,
+                      o.final_state, o.resolved_at,
+                      COALESCE(s.recovery_probability, 0.0) AS recovery_probability
+               FROM payment_events e
+               JOIN outcomes o ON o.event_id = e.event_id
+               LEFT JOIN scores s ON s.event_id = e.event_id"""
+            + clause,
+            parameters | {"event_id": event_id},
+        )
+        # A case in another tenant is reported as missing rather than forbidden: the
+        # caller should not learn that the event exists.
+        if row is None:
+            raise LookupError(f"No case {event_id} in this tenant")
+        if row["resolved_at"] is not None:
+            raise CaseNotReviewableError(f"Case {event_id} was already resolved at {row['resolved_at']}")
+        if str(row["final_state"]) != REVIEWABLE_STATE:
+            raise CaseNotReviewableError(
+                f"Case {event_id} is {row['final_state']}, and only {REVIEWABLE_STATE} cases can be resolved"
+            )
+        return dict(row)
+
+    def _resolve_by_retry(
+        self,
+        connection: DatabaseConnection,
+        case: dict,
+        category: FailureCategory,
+        actor: str,
+        resolved_at: str,
+    ) -> ResolveCaseResponse:
+        context = ActionContext(
+            event_id=int(case["event_id"]),
+            payment_id=str(case["payment_id"]),
+            category=category,
+            amount=float(case["amount"]),
+            retry_count=int(case["retry_count"]),
+            recovery_probability=float(case["recovery_probability"]),
+            human_review_approved=True,
+        )
+        result = self.action_executor.execute(TaskType.EXECUTE_RETRY, context)
+        if not result.executed:
+            # The engine refused. The case stays open so it is still visible, and
+            # nothing is recorded as recovered.
+            return ResolveCaseResponse(
+                event_id=context.event_id, resolution=CaseResolution.MANUAL_RETRY,
+                final_state=REVIEWABLE_STATE, recovered=None, executed=False,
+                detail=result.detail, resolved_by=actor, resolved_at=resolved_at,
+            )
+        final_state = result.final_state or "UNRESOLVED"
+        recovered_amount = float(case["amount"]) if result.recovered else 0.0
+        self._write_resolution(connection, context.event_id, result.recovered, recovered_amount, final_state, actor, resolved_at)
+        return ResolveCaseResponse(
+            event_id=context.event_id, resolution=CaseResolution.MANUAL_RETRY,
+            final_state=final_state, recovered=result.recovered, executed=True,
+            detail=result.detail, resolved_by=actor, resolved_at=resolved_at,
+        )
+
+    def _resolve_by_record(
+        self,
+        connection: DatabaseConnection,
+        case: dict,
+        resolution: CaseResolution,
+        actor: str,
+        resolved_at: str,
+    ) -> ResolveCaseResponse:
+        """Record a reviewer's conclusion. No payment action is taken here."""
+        recovered = resolution is CaseResolution.MANUAL_RECOVERED
+        final_state = "MANUALLY_RECOVERED" if recovered else "WRITTEN_OFF"
+        amount = float(case["amount"]) if recovered else 0.0
+        event_id = int(case["event_id"])
+        self._write_resolution(connection, event_id, recovered, amount, final_state, actor, resolved_at)
+        detail = (
+            "Reviewer recorded the payment as recovered outside the platform."
+            if recovered
+            else "Reviewer wrote the case off; no further recovery will be attempted."
+        )
+        return ResolveCaseResponse(
+            event_id=event_id, resolution=resolution, final_state=final_state,
+            recovered=recovered, executed=False, detail=detail,
+            resolved_by=actor, resolved_at=resolved_at,
+        )
+
+    def _write_resolution(
+        self,
+        connection: DatabaseConnection,
+        event_id: int,
+        recovered: bool | None,
+        recovered_amount: float,
+        final_state: str,
+        actor: str,
+        resolved_at: str,
+    ) -> None:
+        connection.execute(
+            """UPDATE outcomes
+               SET recovered = :recovered, recovered_amount = :amount, final_state = :final_state,
+                   resolved_by = :actor, resolved_at = :resolved_at
+               WHERE event_id = :event_id""",
+            {
+                "recovered": None if recovered is None else int(recovered),
+                "amount": recovered_amount,
+                "final_state": final_state,
+                "actor": actor,
+                "resolved_at": resolved_at,
+                "event_id": event_id,
+            },
+        )
+
+    def get_audit_trail(
+        self,
+        event_id: int | None = None,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> list[AuditEntry]:
+        """Read the audit log, scoped to the caller's tenant.
+
+        The audit log has no tenant column of its own; it is joined to the event it
+        describes so isolation follows from the event's tenant rather than from a
+        second copy of the same fact.
+        """
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        conditions = []
+        parameters: dict[str, object] = {"limit": limit}
+        if tenant_id is not None:
+            conditions.append("e.tenant_id = :tenant_id")
+            parameters["tenant_id"] = tenant_id
+        if event_id is not None:
+            conditions.append("a.event_id = :event_id")
+            parameters["event_id"] = event_id
+        clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        with self.database.connect() as connection:
+            rows = connection.fetch_all(
+                """SELECT a.audit_id, a.event_id, a.event_type, a.details_json, a.created_at
+                   FROM audit_log a JOIN payment_events e ON e.event_id = a.event_id"""
+                + clause
+                + " ORDER BY a.audit_id DESC LIMIT :limit",
+                parameters,
+            )
+        return [
+            AuditEntry(
+                audit_id=int(row["audit_id"]),
+                event_id=int(row["event_id"]),
+                event_type=str(row["event_type"]),
+                details=_safe_json(str(row["details_json"])),
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+
+def _safe_json(raw: str) -> dict:
+    """Audit rows are written by this application, but a hand-edited row should not
+    break the whole audit view."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"unparsed": raw}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}

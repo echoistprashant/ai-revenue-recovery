@@ -95,6 +95,13 @@ class RecoveryWorker:
             report.withheld += 1
 
     def _load_context(self, connection: DatabaseConnection, task: Task) -> ActionContext:
+        """Rebuild the decision inputs from the database, not from the task row.
+
+        Only ``incident_active`` is read from the payload. In particular
+        ``human_review_approved`` is never taken from a task: a queued row cannot
+        claim that a person approved it, so the high-value escalation guardrail
+        cannot be satisfied by writing a task.
+        """
         row = connection.fetch_one(CONTEXT_QUERY, {"event_id": task.event_id})
         if row is None:
             raise LookupError(f"Task {task.task_id} references missing event {task.event_id}")

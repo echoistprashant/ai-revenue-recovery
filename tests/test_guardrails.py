@@ -47,3 +47,66 @@ def test_incident_clears_when_rate_normalizes() -> None:
     recovered = gateway_health("Bank", "Gateway", 1, 50)
     assert incident.incident_active is True
     assert recovered.incident_active is False
+
+
+def test_human_review_satisfies_the_high_value_guardrail() -> None:
+    """The guardrail that exists to wait for a person is cleared by that person.
+
+    Without this, an escalated case could never be closed by a retry and the queue
+    would only ever grow.
+    """
+    result = evaluate_guardrails(
+        FailureCategory.INSUFFICIENT_FUNDS, 50001, 0, False, None, human_review_approved=True,
+    )
+    assert result.allowed is True
+    assert result.forced_action is None
+
+
+def test_human_review_cannot_clear_the_fraud_hard_stop() -> None:
+    """No reviewer, and no role, turns a fraud decline into a retry.
+
+    The flag is checked below the fraud stop on purpose, so an approving human — or
+    any future caller that sets the flag — still hits the hard stop first.
+    """
+    result = evaluate_guardrails(
+        FailureCategory.FRAUD_RISK_DECLINE, 100000, 0, False, None, human_review_approved=True,
+    )
+    assert result.allowed is False
+    assert result.forced_action == "STOP_RECOVERY"
+    assert result.rule == "FRAUD_HARD_STOP"
+
+
+def test_human_review_cannot_clear_the_retry_cap() -> None:
+    """Approval does not buy an extra attempt past the cap.
+
+    A capped case is capped because more attempts damage the customer relationship
+    and the gateway's acceptance rate, which a reviewer's approval does not change.
+    """
+    result = evaluate_guardrails(
+        FailureCategory.INSUFFICIENT_FUNDS, 100000, 3, False, None,
+        config=GuardrailConfig(max_retries=3), human_review_approved=True,
+    )
+    assert result.allowed is False
+    assert result.rule == "RETRY_CAP"
+
+
+def test_human_review_does_not_override_an_active_incident() -> None:
+    """Retrying into a broken payment route wastes the attempt for everyone."""
+    result = evaluate_guardrails(
+        FailureCategory.INSUFFICIENT_FUNDS, 50001, 0, True, None, human_review_approved=True,
+    )
+    assert result.allowed is False
+    assert result.rule == "ACTIVE_INCIDENT"
+
+
+def test_decision_engine_threads_human_review_through() -> None:
+    escalated = DecisionEngine().decide(DecisionContext(FailureCategory.INSUFFICIENT_FUNDS, 60000, 0, 0.8))
+    approved = DecisionEngine().decide(
+        DecisionContext(FailureCategory.INSUFFICIENT_FUNDS, 60000, 0, 0.8, human_review_approved=True)
+    )
+    fraud = DecisionEngine().decide(
+        DecisionContext(FailureCategory.FRAUD_RISK_DECLINE, 60000, 0, 0.8, human_review_approved=True)
+    )
+    assert escalated.action == "ESCALATE_TO_HUMAN"
+    assert approved.action != "ESCALATE_TO_HUMAN"
+    assert fraud.action == "STOP_RECOVERY"

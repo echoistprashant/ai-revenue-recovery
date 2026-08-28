@@ -253,3 +253,98 @@ class EventHistoryItem(BaseModel):
     revenue_at_risk: float | None = None
     priority_score: float | None = None
     created_at: str
+
+
+class UserRole(StrEnum):
+    VIEWER = "VIEWER"
+    OPERATOR = "OPERATOR"
+    ADMIN = "ADMIN"
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in_seconds: int
+    role: UserRole
+    tenant_id: str
+    username: str
+
+
+class UserCreate(BaseModel):
+    """Account creation input. Passwords are never echoed back in any response."""
+
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=12, max_length=200)
+    role: UserRole = UserRole.VIEWER
+    tenant_id: str | None = Field(default=None, max_length=80)
+
+
+class UserResponse(BaseModel):
+    user_id: int
+    username: str
+    role: UserRole
+    tenant_id: str
+    is_active: bool
+    created_at: str
+    last_login_at: str | None = None
+
+
+class ReviewCase(BaseModel):
+    """An escalated case waiting for a human decision."""
+
+    event_id: int
+    payment_id: str
+    attempt_id: str
+    customer_id: str
+    amount: float
+    currency: str
+    failure_category: FailureCategory
+    action: RecoveryAction
+    reason: str
+    final_state: str
+    recovery_probability: float | None = None
+    churn_risk: float | None = None
+    revenue_at_risk: float | None = None
+    priority_score: float | None = None
+    created_at: str
+
+
+class CaseResolution(StrEnum):
+    """What a reviewer concluded about an escalated case.
+
+    ``MANUAL_RETRY`` does not perform a retry on the reviewer's authority: it is
+    re-submitted to the deterministic decision engine, which can still refuse it.
+    """
+
+    MANUAL_RECOVERED = "MANUAL_RECOVERED"
+    WRITTEN_OFF = "WRITTEN_OFF"
+    MANUAL_RETRY = "MANUAL_RETRY"
+
+
+class ResolveCaseRequest(BaseModel):
+    resolution: CaseResolution
+    note: str = Field(default="", max_length=500)
+
+
+class ResolveCaseResponse(BaseModel):
+    event_id: int
+    resolution: CaseResolution
+    final_state: str
+    recovered: bool | None
+    executed: bool
+    detail: str
+    resolved_by: str
+    resolved_at: str
+
+
+class AuditEntry(BaseModel):
+    audit_id: int
+    event_id: int
+    event_type: str
+    details: dict
+    created_at: str

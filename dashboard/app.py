@@ -12,7 +12,8 @@ import streamlit as st
 # Add current directory to path if running directly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from dashboard.api_client import APIClient, APIClientError
+from dashboard.access import allowed, menu_for
+from dashboard.api_client import APIClient, APIClientError, AuthenticationRequiredError
 from dashboard.components.ui import (
     get_badge_html,
     inject_custom_css,
@@ -31,8 +32,93 @@ st.set_page_config(
 
 inject_custom_css()
 
-# Initialize API Client
-api_client = APIClient()
+# ==============================================================================
+# SESSION, AUTHENTICATION AND ROLE GATING
+# ==============================================================================
+
+
+class SessionAPIClient(APIClient):
+    """The dashboard's client, which treats a dead session as a UI event.
+
+    A 401 can come back from any endpoint at any moment — the token expired, an admin
+    deactivated the account, the signing key rotated. Handling it once, here, is why
+    no individual panel has to check for it: the token is dropped and the script
+    restarts on the login form. ``st.rerun`` raises a ``BaseException``, so it unwinds
+    cleanly through the panels' ``except APIClientError`` handlers instead of being
+    swallowed by them and reported as a backend outage.
+    """
+
+    def _request(self, method: str, endpoint: str, **kwargs):
+        try:
+            return super()._request(method, endpoint, **kwargs)
+        except AuthenticationRequiredError as exc:
+            st.session_state.pop("token", None)
+            st.session_state.pop("identity", None)
+            st.session_state["auth_notice"] = f"Your session has ended — please sign in again. ({exc})"
+            st.rerun()
+
+
+def get_client() -> SessionAPIClient:
+    """One client per browser session, carrying whatever token that session holds."""
+    if "client" not in st.session_state:
+        st.session_state["client"] = SessionAPIClient()
+    client = st.session_state["client"]
+    client.token = st.session_state.get("token")
+    return client
+
+
+def sign_out(notice: str | None = None) -> None:
+    """Forget the token locally and restart the script on the login form.
+
+    The access token is stateless and self-expiring, so signing out is a client-side
+    act: what makes an account unusable before its token expires is deactivating it,
+    which the backend checks on every single request.
+    """
+    st.session_state.pop("token", None)
+    st.session_state.pop("identity", None)
+    if notice:
+        st.session_state["auth_notice"] = notice
+    st.rerun()
+
+
+def render_login(client: SessionAPIClient) -> None:
+    """Ask for credentials. Nothing else on the page renders until this succeeds."""
+    notice = st.session_state.pop("auth_notice", None)
+    left, middle, right = st.columns([1, 2, 1])
+    with middle:
+        if notice:
+            st.warning(notice)
+        st.markdown("#### 🔐 Sign in")
+        st.caption(
+            "Roles: VIEWER reads dashboards, OPERATOR ingests events and resolves "
+            "escalations, ADMIN manages accounts."
+        )
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
+        if submitted:
+            if not username or not password:
+                st.error("Enter both a username and a password.")
+                return
+            try:
+                token = client.login(username, password)
+            except APIClientError as exc:
+                # Deliberately unspecific: whether the account exists is not
+                # something an unauthenticated caller gets to learn from the UI.
+                st.error(f"Sign-in failed: {exc}")
+                return
+            st.session_state["token"] = token["access_token"]
+            st.session_state["identity"] = {
+                "username": token["username"],
+                "role": str(token["role"]),
+                "tenant_id": token["tenant_id"],
+                "expires_in_seconds": token["expires_in_seconds"],
+            }
+            st.rerun()
+
+
+api_client = get_client()
 
 # Navigation Sidebar
 st.sidebar.markdown(
@@ -46,23 +132,8 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
-menu_options = [
-    "📊 Executive Overview",
-    "💳 Payment Operations",
-    "🎯 Priority Cases",
-    "🧠 Decision Center",
-    "🔮 Recovery Optimization",
-    "🏦 Gateway Health",
-    "💬 Customer Communication",
-    "🤖 AI Revenue Analyst",
-    "🧪 Experiments & What-If",
-    "📈 Monitoring & Data Drift",
-    "📜 Audit & Decision History",
-]
-
-selected_module = st.sidebar.radio("Navigate Control Center", menu_options, index=0)
-
-# Sidebar System Health Status
+# Backend health needs no token, so it is shown to signed-out visitors too: a failed
+# sign-in caused by a stopped backend should not look like a bad password.
 st.sidebar.markdown("<hr style='border-color:#334155; margin: 1rem 0;'/>", unsafe_allow_html=True)
 try:
     health = api_client.get_health()
@@ -76,6 +147,36 @@ except Exception:
         unsafe_allow_html=True,
     )
     st.sidebar.caption("Ensure FastAPI backend is running at http://127.0.0.1:8000")
+
+# --- Login gate. Nothing below this line renders without a session. ---
+if not st.session_state.get("token"):
+    render_header()
+    render_login(api_client)
+    st.stop()
+
+identity = st.session_state["identity"]
+role = identity["role"]
+
+st.sidebar.markdown(
+    f"""
+    <hr style='border-color:#334155; margin: 1rem 0;'/>
+    <div style="font-size:0.85rem; line-height:1.7;">
+        <span style="color:#94a3b8;">Signed in as</span><br/>
+        <strong style="color:#f8fafc;">{identity['username']}</strong>
+        <span class="badge badge-success">{role}</span><br/>
+        <span style="color:#94a3b8;">Tenant:</span> <code>{identity['tenant_id']}</code>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+if st.sidebar.button("Sign out", use_container_width=True):
+    sign_out("Signed out.")
+
+# The menu hides what this role cannot use. That is a convenience, not the control:
+# every route re-checks the role server-side on every request, and the backend's 403
+# is the authoritative answer — see the require(minimum) dependency in api.py.
+menu_options = menu_for(role)
+selected_module = st.sidebar.radio("Navigate Control Center", menu_options, index=0)
 
 render_header()
 render_disclaimer_banner()
@@ -150,12 +251,9 @@ elif selected_module == "💳 Payment Operations":
     st.subheader("💳 Payment Event Ingestion & Gateway Adapter")
     st.caption("Submit payment events directly or ingest signed Razorpay gateway webhooks to trigger classification, ML scoring, guardrail checks, and deterministic actions.")
 
-    tab_internal, tab_webhook = st.tabs(["📝 Internal Schema Form", "🔗 Razorpay Webhook Gateway Adapter"])
-
-    with tab_internal:
-        st.markdown("#### Quick Fill Scenario Presets")
-        preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
-
+    st.markdown("#### 📝 Internal Schema Form")
+    st.markdown("##### Quick Fill Scenario Presets")
+    preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
 
     preset = None
     if preset_col1.button("🟢 Inadequate Funds Event"):
@@ -305,18 +403,20 @@ elif selected_module == "💳 Payment Operations":
                 rar = result.get("revenue_at_risk")
                 p_score = result.get("priority_score")
 
+                # A finished case (fraud decline, capped retry) is never scored, so
+                # these are genuinely absent rather than zero, and are shown as such.
                 st.markdown(f"""
-                - **Recovery Probability**: `{prob:.4f}` if prob is not None else `N/A`
-                - **Churn Risk Score**: `{churn:.4f}` if churn is not None else `N/A`
-                - **Revenue at Risk**: `INR {rar:,.2f}` if rar is not None else `N/A`
-                - **Priority Score**: `{p_score:,.2f}` if p_score is not None else `N/A`
+                - **Recovery Probability**: `{f'{prob:.4f}' if prob is not None else 'not scored'}`
+                - **Churn Risk Score**: `{f'{churn:.4f}' if churn is not None else 'not scored'}`
+                - **Revenue at Risk**: `{f'INR {rar:,.2f}' if rar is not None else 'not scored'}`
+                - **Priority Score**: `{f'{p_score:,.2f}' if p_score is not None else 'not scored'}`
                 - **Simulated Final Outcome**: `{result.get('recovered')}`
                 """)
 
         except APIClientError as exc:
             st.error(f"Failed to process event: {exc}")
 
-    with tab_webhook:
+    with st.expander("🔗 Razorpay Webhook Gateway Adapter — signed gateway callback"):
         st.markdown("#### 🔗 Signed Razorpay Webhook Ingestion & HMAC Verification")
         st.caption("Construct and sign a Razorpay gateway webhook payload with HMAC-SHA256 and transmit it to POST /webhooks/razorpay.")
 
@@ -338,7 +438,16 @@ elif selected_module == "💳 Payment Operations":
 
         w_col4, w_col5 = st.columns(2)
         w_pid = w_col4.text_input("Payment ID", value=f"pay_rzp_live_{datetime.datetime.now().strftime('%M%S')}")
-        w_secret = w_col5.text_input("Webhook Secret", value="test_webhook_secret")
+        # Read from the environment, never shipped in the source: this value must match
+        # the backend's configured secret, and a real one does not belong in a UI default.
+        w_secret = w_col5.text_input(
+            "Webhook Secret", value=os.getenv("RAZORPAY_WEBHOOK_SECRET", ""), type="password",
+        )
+        if not w_secret:
+            st.caption(
+                "Set `RAZORPAY_WEBHOOK_SECRET` to the backend's configured secret, or paste "
+                "it here. Without the matching secret the backend rejects the signature with 401."
+            )
 
         sample_webhook = {
             "entity": "event",
@@ -444,6 +553,120 @@ elif selected_module == "🎯 Priority Cases":
 
     except APIClientError as exc:
         st.error(f"Error fetching priority cases: {exc}")
+
+# ==============================================================================
+# MODULE 3B: HUMAN REVIEW QUEUE
+# ==============================================================================
+elif selected_module == "🧑‍⚖️ Human Review Queue":
+    st.subheader("🧑‍⚖️ Human Review Queue")
+    st.caption(
+        "Cases the guardrails escalated instead of acting on — high-value transactions "
+        "above the review threshold. Ordered by priority score, so the most valuable "
+        "recoverable case is first."
+    )
+
+    st.markdown(
+        """
+        <div style="background-color: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 8px; padding: 0.8rem; margin-bottom: 1rem;">
+            <strong>🔒 A reviewer's approval is an input, not an authority.</strong><br/>
+            Choosing <code>MANUAL_RETRY</code> re-submits the case to the deterministic
+            decision engine, which can still withhold it — a fraud decline, a capped
+            retry, or a gateway incident is refused no matter who approves it.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    queue_limit = st.slider("Cases to load", min_value=5, max_value=50, value=20)
+
+    try:
+        queue = api_client.get_review_queue(limit=queue_limit)
+
+        if not queue:
+            st.success("Nothing is waiting for a human. The escalation queue is empty.")
+        else:
+            df_queue = pd.DataFrame(queue)
+            st.dataframe(
+                df_queue[
+                    [
+                        "event_id",
+                        "payment_id",
+                        "customer_id",
+                        "amount",
+                        "failure_category",
+                        "recovery_probability",
+                        "priority_score",
+                        "reason",
+                        "created_at",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.markdown("#### Case Review")
+            case_id = st.selectbox("Select a case", df_queue["event_id"].tolist())
+            case = df_queue[df_queue["event_id"] == case_id].iloc[0]
+
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Amount", f"INR {case['amount']:,.2f}")
+            r2.metric(
+                "Recovery Probability",
+                "not scored" if pd.isna(case["recovery_probability"]) else f"{case['recovery_probability']:.2%}",
+            )
+            r3.metric("Churn Risk", "—" if pd.isna(case["churn_risk"]) else f"{case['churn_risk']:.2f}")
+            r4.metric("Priority Score", "—" if pd.isna(case["priority_score"]) else f"{case['priority_score']:,.2f}")
+
+            st.markdown(f"**Why it escalated**: {case['reason']}")
+            st.markdown(f"**Current state**: `{case['final_state']}` · **Action**: `{case['action']}`")
+
+            with st.expander("📜 Audit trail for this case"):
+                try:
+                    trail = api_client.get_audit_log(event_id=int(case_id))
+                    if trail:
+                        for entry in trail:
+                            st.markdown(f"**{entry['created_at']}** — `{entry['event_type']}`")
+                            st.json(entry["details"], expanded=False)
+                    else:
+                        st.info("No audit entries recorded for this case.")
+                except APIClientError as exc:
+                    st.error(f"Failed to load the audit trail: {exc}")
+
+            if not allowed(role, "OPERATOR"):
+                st.info("Resolving a case requires the OPERATOR role. You can read the queue.")
+            else:
+                with st.form("resolve_case_form"):
+                    resolution = st.radio(
+                        "Resolution",
+                        ["MANUAL_RETRY", "MANUAL_RECOVERED", "WRITTEN_OFF"],
+                        captions=[
+                            "Re-submit to the decision engine, which may still withhold it.",
+                            "The customer paid through another channel — record it as recovered.",
+                            "Give up on this case and close it.",
+                        ],
+                    )
+                    note = st.text_area("Reviewer note (recorded in the audit log)", max_chars=500)
+                    resolve_submitted = st.form_submit_button("Resolve Case", use_container_width=True)
+
+                if resolve_submitted:
+                    try:
+                        outcome = api_client.resolve_case(int(case_id), resolution, note)
+                    except APIClientError as exc:
+                        st.error(f"Resolution failed: {exc}")
+                    else:
+                        if outcome["executed"]:
+                            st.success(f"✅ {outcome['detail']}")
+                        else:
+                            st.warning(f"🛡️ {outcome['detail']}")
+                        st.markdown(
+                            f"- **Final state**: `{outcome['final_state']}`\n"
+                            f"- **Recovered**: `{outcome['recovered']}`\n"
+                            f"- **Action executed**: `{outcome['executed']}`\n"
+                            f"- **Resolved by**: `{outcome['resolved_by']}` at `{outcome['resolved_at']}`"
+                        )
+                        st.caption("Reload the queue to see the case leave it.")
+
+    except APIClientError as exc:
+        st.error(f"Failed to load the review queue: {exc}")
 
 # ==============================================================================
 # MODULE 4: DECISION CENTER
@@ -818,13 +1041,19 @@ elif selected_module == "📈 Monitoring & Data Drift":
                 unsafe_allow_html=True,
             )
 
-        if st.button("Flush Due Background Work", use_container_width=True):
-            report = api_client.run_due_tasks()
-            st.success(
-                f"Claimed {report.get('claimed', 0)} · executed {report.get('executed', 0)} · "
-                f"withheld by guardrails {report.get('withheld', 0)} · failed {report.get('failed', 0)} · "
-                f"requeued after a stalled worker {report.get('requeued', 0)}"
-            )
+        # Flushing the queue can execute approved actions, so it needs the operator
+        # role. The backend enforces that; hiding the button only avoids offering a
+        # viewer a control that would answer 403.
+        if allowed(role, "OPERATOR"):
+            if st.button("Flush Due Background Work", use_container_width=True):
+                report = api_client.run_due_tasks()
+                st.success(
+                    f"Claimed {report.get('claimed', 0)} · executed {report.get('executed', 0)} · "
+                    f"withheld by guardrails {report.get('withheld', 0)} · failed {report.get('failed', 0)} · "
+                    f"requeued after a stalled worker {report.get('requeued', 0)}"
+                )
+        else:
+            st.caption("Flushing due background work requires the OPERATOR role.")
 
         st.markdown("#### 🧪 PSI Data Drift Detection Test")
         st.caption("Detects whether payment method distributions shift between training baseline and live inference.")
@@ -893,8 +1122,112 @@ elif selected_module == "📜 Audit & Decision History":
                 hide_index=True,
             )
 
+            st.markdown("#### 🔍 Per-Event Audit Trail")
+            st.caption(
+                "Every decision and every executed action writes an immutable audit row. "
+                "Selecting an event shows that trail: what was classified, what the model "
+                "scored, which guardrail fired, and what the worker actually did."
+            )
+            audit_event_id = st.selectbox("Event ID", df_hist["event_id"].tolist())
+            trail = api_client.get_audit_log(event_id=int(audit_event_id))
+            if trail:
+                for entry in trail:
+                    st.markdown(
+                        f"**{entry['created_at']}** — `{entry['event_type']}` "
+                        f"<span style='color:#94a3b8;'>(audit #{entry['audit_id']})</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.json(entry["details"], expanded=False)
+            else:
+                st.info("No audit entries recorded for this event.")
+
         else:
             st.info("No decision history recorded in database yet.")
 
     except APIClientError as exc:
         st.error(f"Failed to fetch decision history: {exc}")
+
+# ==============================================================================
+# MODULE 12: USER ADMINISTRATION
+# ==============================================================================
+elif selected_module == "👥 User Administration":
+    st.subheader("👥 User Administration")
+    st.caption(
+        "Accounts in your tenant. Roles are ranked: VIEWER reads, OPERATOR also ingests "
+        "events and resolves escalations, ADMIN also manages accounts."
+    )
+    st.markdown(
+        """
+        <div style="background-color: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 0.8rem; margin-bottom: 1rem;">
+            <strong>🔒 No role overrides the fraud hard stop.</strong> ADMIN manages
+            accounts; it does not gain a path to retry a fraud-risk decline or to exceed
+            the retry cap. Those refusals sit below every role in the guardrail chain.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    try:
+        accounts = api_client.list_users()
+
+        if accounts:
+            st.dataframe(
+                pd.DataFrame(accounts)[
+                    ["user_id", "username", "role", "tenant_id", "is_active", "created_at", "last_login_at"]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.markdown("#### Create an account")
+        with st.form("create_user_form"):
+            u_col1, u_col2, u_col3 = st.columns(3)
+            new_username = u_col1.text_input("Username", help="At least 3 characters.")
+            new_role = u_col2.selectbox("Role", ["VIEWER", "OPERATOR", "ADMIN"])
+            new_tenant = u_col3.text_input(
+                "Tenant", value=identity["tenant_id"],
+                help="Accounts and their data are isolated per tenant.",
+            )
+            new_password = st.text_input(
+                "Password", type="password",
+                help="At least 12 characters. Stored only as a bcrypt hash and never echoed back.",
+            )
+            create_submitted = st.form_submit_button("Create Account", use_container_width=True)
+
+        if create_submitted:
+            try:
+                created = api_client.create_user({
+                    "username": new_username,
+                    "password": new_password,
+                    "role": new_role,
+                    "tenant_id": new_tenant or None,
+                })
+            except APIClientError as exc:
+                st.error(f"Could not create the account: {exc}")
+            else:
+                st.success(f"Created `{created['username']}` as {created['role']} in tenant `{created['tenant_id']}`.")
+
+        st.markdown("#### Deactivate an account")
+        st.caption(
+            "Deactivation takes effect on the account's very next request, including one "
+            "made with a token issued before it — the backend re-reads the account row on "
+            "every call rather than trusting the token's claims."
+        )
+        active_names = [a["username"] for a in accounts if a["is_active"]]
+        if not active_names:
+            st.info("No active accounts to deactivate.")
+        else:
+            target = st.selectbox("Account", active_names)
+            if st.button("Deactivate", use_container_width=True):
+                try:
+                    disabled = api_client.deactivate_user(target)
+                except APIClientError as exc:
+                    st.error(f"Could not deactivate the account: {exc}")
+                else:
+                    st.success(f"`{disabled['username']}` is now inactive.")
+                    if disabled["username"] == identity["username"]:
+                        sign_out("You deactivated your own account.")
+
+    except APIClientError as exc:
+        st.error(f"Failed to load accounts: {exc}")
+

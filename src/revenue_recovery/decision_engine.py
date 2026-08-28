@@ -15,6 +15,9 @@ class DecisionContext:
     last_contact_at: datetime | None = None
     recommended_method: str | None = None
     retry_after_hours: int | None = None
+    # Set only by the human-review resolution path. It satisfies the high-value
+    # escalation guardrail and nothing else; see evaluate_guardrails.
+    human_review_approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class DecisionEngine:
         guardrail = evaluate_guardrails(
             context.category, context.amount, context.retry_count,
             context.incident_active, context.last_contact_at, config=self.config,
+            human_review_approved=context.human_review_approved,
         )
         if not guardrail.allowed:
             return Decision(guardrail.forced_action or "STOP_RECOVERY", guardrail.reason, guardrail)

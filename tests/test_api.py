@@ -1,10 +1,11 @@
-from fastapi.testclient import TestClient
+"""HTTP behaviour of the application routes.
 
-from revenue_recovery.api import create_app
+Every test here uses an authenticated client from ``conftest``; authentication and
+authorization themselves are covered in ``test_api_auth.py``.
+"""
 
 
-def test_event_api_and_metrics(service, event_payload: dict) -> None:
-    client = TestClient(create_app(service))
+def test_event_api_and_metrics(client, event_payload: dict) -> None:
     response = client.post("/events", json=event_payload)
     assert response.status_code == 201
     assert response.json()["failure_category"] == "INSUFFICIENT_FUNDS"
@@ -16,15 +17,15 @@ def test_event_api_and_metrics(service, event_payload: dict) -> None:
     assert len(priorities.json()) == 1
 
 
-def test_api_rejects_unknown_failure_code(service, event_payload: dict) -> None:
+def test_api_rejects_unknown_failure_code(client, event_payload: dict) -> None:
     event_payload["failure_code"] = "mystery_failure"
-    response = TestClient(create_app(service)).post("/events", json=event_payload)
+    response = client.post("/events", json=event_payload)
     assert response.status_code == 422
     assert "Unsupported failure code" in response.json()["detail"]
 
 
-def test_recommendation_api_is_typed_and_personalized(service) -> None:
-    response = TestClient(create_app(service)).post("/recommendations", json={
+def test_recommendation_api_is_typed_and_personalized(client) -> None:
+    response = client.post("/recommendations", json={
         "customer_id": "customer_1",
         "reference_hour": 10,
         "history": [
@@ -40,8 +41,7 @@ def test_recommendation_api_is_typed_and_personalized(service) -> None:
     assert result["recommended_payment_method"] == "UPI"
 
 
-def test_decision_and_gateway_health_endpoints(service) -> None:
-    client = TestClient(create_app(service))
+def test_decision_and_gateway_health_endpoints(client) -> None:
     fraud = client.post("/decisions", json={
         "failure_category": "FRAUD_RISK_DECLINE", "amount": 100, "retry_count": 0,
         "recovery_probability": 0.99,
@@ -55,8 +55,7 @@ def test_decision_and_gateway_health_endpoints(service) -> None:
     assert incident.json()["incident_active"] is True
 
 
-def test_bounded_communication_and_analyst_endpoints(service, event_payload: dict) -> None:
-    client = TestClient(create_app(service))
+def test_bounded_communication_and_analyst_endpoints(client, event_payload: dict) -> None:
     client.post("/events", json=event_payload)
     communication = client.post("/communication", json={
         "action": "STOP_RECOVERY", "failure_category": "FRAUD_RISK_DECLINE", "amount": 100,
@@ -68,8 +67,8 @@ def test_bounded_communication_and_analyst_endpoints(service, event_payload: dic
     assert "Source: get_recovery_metrics" in analyst.json()["answer"]
 
 
-def test_experiment_endpoint_returns_typed_comparison(service) -> None:
-    response = TestClient(create_app(service)).post("/experiments", json={
+def test_experiment_endpoint_returns_typed_comparison(client) -> None:
+    response = client.post("/experiments", json={
         "experiment_id": "exp-1",
         "events": [
             {"event_id": f"e-{i}", "amount": 100 + i, "latent_recovery_score": (i * 37 % 100) / 100}
@@ -80,8 +79,7 @@ def test_experiment_endpoint_returns_typed_comparison(service) -> None:
     assert response.json()["control"]["sample_size"] + response.json()["treatment"]["sample_size"] == 20
 
 
-def test_operational_metrics_and_drift_endpoints(service) -> None:
-    client = TestClient(create_app(service))
+def test_operational_metrics_and_drift_endpoints(client) -> None:
     client.get("/health")
     metrics = client.get("/operational-metrics")
     assert metrics.status_code == 200
@@ -95,8 +93,7 @@ def test_operational_metrics_and_drift_endpoints(service) -> None:
     assert drift.json()["status"] == "SIGNIFICANT_DRIFT"
 
 
-def test_history_endpoint_returns_event_log(service, event_payload: dict) -> None:
-    client = TestClient(create_app(service))
+def test_history_endpoint_returns_event_log(client, event_payload: dict) -> None:
     client.post("/events", json=event_payload)
     history = client.get("/history?limit=10")
     assert history.status_code == 200
@@ -107,8 +104,8 @@ def test_history_endpoint_returns_event_log(service, event_payload: dict) -> Non
     assert items[0]["action"] is not None
 
 
-def test_task_endpoints_report_and_drain_the_queue(queued_service, event_payload: dict) -> None:
-    client = TestClient(create_app(queued_service))
+def test_task_endpoints_report_and_drain_the_queue(queued_client, event_payload: dict) -> None:
+    client = queued_client
     client.post("/events", json=event_payload)
 
     stats = client.get("/tasks/stats")
@@ -123,8 +120,7 @@ def test_task_endpoints_report_and_drain_the_queue(queued_service, event_payload
     assert client.get("/tasks/stats").json()["PENDING"] == 1
 
 
-def test_inline_mode_reports_an_empty_queue(service, event_payload: dict) -> None:
-    client = TestClient(create_app(service))
+def test_inline_mode_reports_an_empty_queue(client, event_payload: dict) -> None:
     client.post("/events", json=event_payload)
     stats = client.get("/tasks/stats").json()
     assert stats["execution_mode"] == "inline"

@@ -6,6 +6,13 @@ INLINE = "inline"
 QUEUED = "queued"
 EXECUTION_MODES = (INLINE, QUEUED)
 
+DEFAULT_TENANT = "default"
+
+# A signing key shorter than this is rejected in production. 32 characters is the
+# output width of `secrets.token_urlsafe(24)`, which is what the docs tell operators
+# to generate.
+MIN_SIGNING_KEY_LENGTH = 32
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -29,10 +36,21 @@ class Settings:
     task_retry_backoff_seconds: int = 60
     worker_poll_interval_seconds: float = 5.0
     worker_batch_size: int = 20
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_minutes: int = 60
+    rate_limit_per_minute: int = 120
+    login_rate_limit_per_minute: int = 10
+    enforce_https: bool = False
+    default_tenant: str = DEFAULT_TENANT
 
     def __post_init__(self) -> None:
         if self.task_execution_mode not in EXECUTION_MODES:
             raise ValueError(f"task_execution_mode must be one of {EXECUTION_MODES}")
+        if self.access_token_ttl_minutes <= 0:
+            raise ValueError("access_token_ttl_minutes must be positive")
+        if self.rate_limit_per_minute <= 0 or self.login_rate_limit_per_minute <= 0:
+            raise ValueError("rate limits must be positive")
 
     @property
     def database_target(self) -> str | Path:
@@ -46,18 +64,36 @@ class Settings:
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
         source = env if env is not None else dict(os.environ)
+        environment = source.get("APP_ENVIRONMENT", "development")
         return cls(
             database_path=Path(source.get("REVENUE_RECOVERY_DATABASE", "data/revenue_recovery.db")),
             database_url=source.get("DATABASE_URL", ""),
             recovery_model_path=Path(source.get("RECOVERY_MODEL_PATH", "models/recovery_model.joblib")),
             razorpay_webhook_secret=source.get("RAZORPAY_WEBHOOK_SECRET", "test_webhook_secret"),
-            environment=source.get("APP_ENVIRONMENT", "development"),
+            environment=environment,
             task_execution_mode=source.get("TASK_EXECUTION_MODE", INLINE),
             task_max_attempts=int(source.get("TASK_MAX_ATTEMPTS", "3")),
             task_retry_backoff_seconds=int(source.get("TASK_RETRY_BACKOFF_SECONDS", "60")),
             worker_poll_interval_seconds=float(source.get("WORKER_POLL_INTERVAL_SECONDS", "5.0")),
             worker_batch_size=int(source.get("WORKER_BATCH_SIZE", "20")),
+            jwt_secret_key=source.get("JWT_SECRET_KEY", ""),
+            jwt_algorithm=source.get("JWT_ALGORITHM", "HS256"),
+            access_token_ttl_minutes=int(source.get("ACCESS_TOKEN_TTL_MINUTES", "60")),
+            rate_limit_per_minute=int(source.get("RATE_LIMIT_PER_MINUTE", "120")),
+            login_rate_limit_per_minute=int(source.get("LOGIN_RATE_LIMIT_PER_MINUTE", "10")),
+            # Plain HTTP is refused in production unless an operator opts out
+            # explicitly, so a misconfigured proxy fails loudly instead of serving
+            # bearer tokens in clear text.
+            enforce_https=_flag(source, "ENFORCE_HTTPS", environment.strip().lower() == "production"),
+            default_tenant=source.get("DEFAULT_TENANT", DEFAULT_TENANT),
         )
+
+
+def _flag(source: dict[str, str], name: str, default: bool) -> bool:
+    raw = source.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 DEFAULT_SETTINGS = Settings.from_env()

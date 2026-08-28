@@ -150,3 +150,60 @@ row recording the re-validated action and whether it executed.
 
 Inline execution remains the default so the recorded synthetic baselines keep their
 numbers; both modes share one execution path.
+
+## Decision 15 — Built-in JWT Authentication with Ranked Roles
+
+Authentication is built into the application (`revenue_recovery.security`,
+`revenue_recovery.auth`) rather than delegated to an external identity provider: the
+system has three roles and one login form, and an external provider would add a
+network dependency and a second failure mode to a surface that small. Access tokens
+are HS256 JWTs; passwords are stored only as bcrypt hashes.
+
+The signing key fails closed. In production the API refuses to boot without
+`JWT_SECRET_KEY` of at least 32 characters, because a default signing key is a
+credential everyone with the source can mint tokens from. In development an ephemeral
+key is generated per process, so tokens stop working on restart instead of being
+signed by something guessable.
+
+Roles are ranked — `VIEWER` (1) < `OPERATOR` (2) < `ADMIN` (3) — and every route
+declares a minimum through one `require(minimum)` dependency, so a new route cannot
+accidentally be less protected than its neighbours. Reads are `VIEWER`; ingesting
+events, resolving escalations, generating customer messages, and flushing the queue
+are `OPERATOR`; account management is `ADMIN`. The account row is re-read from the
+database on every request rather than trusting the token's claims, so deactivation
+and demotion take effect on the account's next call instead of at token expiry.
+
+Role rank never reaches the guardrails. `ADMIN` administers accounts; it does not
+acquire a path to retry a `FRAUD_RISK_DECLINE` or to exceed the retry cap. Those
+refusals are evaluated before the human-review flag is even consulted.
+
+Transport and abuse controls sit in middleware: plain-HTTP requests are refused with
+403 rather than redirected, because a redirect has already carried the bearer token
+in clear text; and a fixed-window per-client rate limit applies to every route, with
+a separate tighter budget for the login route.
+
+## Decision 16 — Tenant Isolation and the Human Review Queue
+
+Every payment event carries a `tenant_id`, and every read is scoped by the caller's
+tenant. The idempotency key became `(tenant_id, payment_id, attempt_id)`: gateway
+payment identifiers are only unique within an account, so a global key would let one
+tenant's event silence another's. The audit log is isolated by joining to its event
+rather than by carrying a duplicate tenant column, so the two can never disagree.
+Gateway webhooks authenticate by HMAC signature and carry no tenant of their own, so
+they land in the configured `DEFAULT_TENANT` — inferring a tenant from payload
+contents would be a way to write into another tenant's data.
+
+The high-value escalation guardrail now has a place to escalate *to*: `ESCALATED`
+cases form a review queue (`GET /review-queue`), ordered by priority score, closed by
+`POST /review-queue/{event_id}/resolve` with `MANUAL_RECOVERED`, `WRITTEN_OFF`, or
+`MANUAL_RETRY`.
+
+A reviewer's approval is an input to the decision, not an authority over it.
+`MANUAL_RETRY` re-submits the case to the deterministic decision engine with
+`human_review_approved` set, and that flag satisfies exactly one guardrail — the
+high-value review that exists to wait for a person. It is evaluated *after* the fraud
+hard stop and the retry cap, so an approving reviewer still cannot retry a fraud
+decline or exceed the cap, and the engine can still withhold the retry on the model's
+score. The flag is never read from a task payload or a request body; only the resolve
+route sets it, after the caller's `OPERATOR` role has been checked.
+
