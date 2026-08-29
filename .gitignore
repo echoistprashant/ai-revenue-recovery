@@ -52,6 +52,16 @@ models/*.onnx
 !models/recovery_model.joblib
 !models/recovery_model_metadata.json
 
+# Node / Next.js frontend
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.npm/
+npm-debug.log*
+.vitest/
+
 # IDE, OS, and editor files
 .idea/
 .vscode/

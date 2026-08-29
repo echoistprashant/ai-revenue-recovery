@@ -64,7 +64,19 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
-**Phase 12 — Authentication, Roles, Tenant Isolation & Human Review.** Every route
+**Phase 13 — Production Next.js Control Centre.** A Next.js 16 App Router frontend
+(`frontend/`) at full parity with the Streamlit dashboard across all thirteen modules.
+The API token is held in an httpOnly, `SameSite=Strict`, `Secure` cookie written by the
+frontend's own route handlers, so browser JavaScript never holds a credential that can
+authorise a payment action. The browser reaches the API only through an allowlisted
+server-side proxy of 21 explicit `(method, path)` rules; `/auth/token` and
+`/webhooks/razorpay` are deliberately not among them. There is no Edge middleware — the
+dashboard layout is the single session gate, so the rule cannot exist in two versions.
+Access rules and formatters are pure modules with unit tests: an unknown role sees
+nothing, and a missing value renders as an em dash rather than `0.0000`. Streamlit is
+unchanged and still supported.
+
+**Phase 12 remains in place — Authentication, Roles, Tenant Isolation & Human Review.** Every route
 except `/health` and the HMAC-signed gateway webhook now requires a bearer token.
 Roles are ranked (`VIEWER` < `OPERATOR` < `ADMIN`): reads need `VIEWER`; ingesting
 events, resolving escalations, generating customer messages, and flushing the queue
@@ -120,6 +132,7 @@ docker compose up --build
 python scripts/run_synthetic_batch.py --count 200
 python -m uvicorn revenue_recovery.api:app --reload
 python -m streamlit run dashboard/app.py
+cd frontend && npm install && npm run dev
 ```
 
 The synthetic batch writes to the ignored local SQLite database by default. Its
@@ -155,6 +168,28 @@ accounts. See [`.env.example`](.env.example) for `ACCESS_TOKEN_TTL_MINUTES`,
 `RATE_LIMIT_PER_MINUTE`, `LOGIN_RATE_LIMIT_PER_MINUTE`, `ENFORCE_HTTPS`, and
 `DEFAULT_TENANT`.
 
+### Control centre (Next.js)
+
+The production frontend lives in `frontend/` and needs Node 20.9 or newer. It talks to
+the API server-side only, so `REVENUE_RECOVERY_API_URL` must be reachable from the
+frontend process, not from the browser:
+
+```text
+cd frontend
+npm install
+npm run verify          # typecheck, unit tests, production build
+npm run dev             # http://localhost:3000
+```
+
+Sign in with an account created by `scripts/create_user.py`. On local HTTP set
+`FRONTEND_COOKIE_SECURE=false`, because a `Secure` cookie is dropped on
+`http://localhost` and sign-in would appear to succeed and then immediately fail; leave
+it at its default in production. `RAZORPAY_WEBHOOK_SECRET` is needed only by the webhook
+simulator page, which returns 503 rather than signing with a publicly known default when
+it is unset. See [`.env.example`](.env.example) for `BACKEND_TIMEOUT_MS`.
+
+The Streamlit dashboard remains available and is unaffected.
+
 ### Database and migrations
 
 SQLite is the default and needs no setup. To run on PostgreSQL, set `DATABASE_URL`
@@ -181,7 +216,8 @@ python scripts/run_worker.py            # long-running poller
 python scripts/run_worker.py --once     # drain due work and exit
 ```
 
-`docker compose up --build` starts the API, the worker, and the dashboard.
+`docker compose up --build` starts the API, the worker, the Streamlit dashboard, and
+the Next.js control centre on port 3000.
 `docker compose --profile postgres up` adds PostgreSQL and a one-shot `migrate`
 service; it requires `POSTGRES_PASSWORD` to be set and refuses to start without it.
 
@@ -221,7 +257,8 @@ The blueprint's 32 capability items are requirements grouped into these phases; 
 - FastAPI and Pydantic for the planned API boundary
 - SQLite for the initial database
 - scikit-learn Logistic Regression for the initial recovery model
-- Streamlit as the initial dashboard direction
+- Streamlit as the initial dashboard direction (Phase 13 adds a Next.js control
+  centre at parity; both are supported)
 - pytest for planned testing
 - Synthetic simulation as the required offline fallback
 

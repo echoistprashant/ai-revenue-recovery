@@ -40,6 +40,27 @@ services:
     depends_on:
       - api
 
+  # The Next.js control centre. It talks to the API over the compose network and is
+  # the only service a browser needs to reach: the bearer token stays in this
+  # container's cookie handling and never reaches browser JavaScript.
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      REVENUE_RECOVERY_API_URL: http://api:8000
+      # Compose serves plain HTTP, and a Secure cookie would be dropped by the browser
+      # on http://localhost. Leave this unset behind TLS so Secure defaults back on.
+      FRONTEND_COOKIE_SECURE: ${FRONTEND_COOKIE_SECURE:-false}
+      BACKEND_TIMEOUT_MS: ${BACKEND_TIMEOUT_MS:-15000}
+      # Needed only by the webhook simulator page, which signs server-side so the
+      # secret never reaches the browser. Without it that route answers 503 rather
+      # than falling back to a publicly known value.
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-test_webhook_secret}
+    depends_on:
+      - api
+
   # `docker compose --profile postgres up` brings up the production-shaped stack.
   # POSTGRES_PASSWORD has no default on purpose: compose fails fast rather than
   # booting a database with a password that is public knowledge.

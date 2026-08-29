@@ -207,3 +207,40 @@ decline or exceed the cap, and the engine can still withhold the retry on the mo
 score. The flag is never read from a task payload or a request body; only the resolve
 route sets it, after the caller's `OPERATOR` role has been checked.
 
+## Decision 17 — A Backend-for-Frontend, Not a Browser Client
+
+The Next.js control centre never holds a credential that can authorise a payment
+action. Sign-in posts to the frontend's own route handler, which calls `/auth/token`
+server-side and stores the bearer token in an httpOnly, `SameSite=Strict`, `Secure`
+cookie. Browser JavaScript cannot read it, so an XSS in a dependency can at most make
+requests the signed-in operator could already make, and a cross-site form post carries
+no session at all. The alternative — a token in `localStorage` and `fetch` straight to
+the API — makes any script on the page a payment-capable client.
+
+The cookie is not signed, because there is nothing in it worth forging. The only field
+the backend trusts is the token, which is itself signed and re-checked against the
+account row on every request. Editing `role` in the cookie changes which navigation
+links get rendered and nothing else; the API answers 403 on its own authority.
+
+The browser reaches the API only through an allowlisted proxy: 21 explicit
+`(method, path-pattern)` rules, with `..` refused before a URL is built. The proxy
+attaches the caller's own token and adds no privilege, so it can never exceed the
+operator behind it. The allowlist exists so it is not a general-purpose tunnel — a new
+endpoint has to be admitted on purpose. `/auth/token` and `/webhooks/razorpay` are
+deliberately absent: login keeps its issued token server-side, and the webhook is
+signed in a route handler so its HMAC secret never reaches the browser.
+
+Two allowlisted routes can lead to a payment action, `POST /events` and
+`POST /review-queue/{event_id}/resolve`. Both were already engine-gated; the frontend
+adds no new path to an action, no field that skips a guardrail, and no scoring of its
+own.
+
+There is no `middleware.ts`. The dashboard route group's server layout is the single
+session gate — duplicating the same rule into the Edge runtime would create two copies
+that can drift, and only one of them is the one that renders the page.
+
+Access rules live in a plain data table (`lib/access.ts`) with no framework imports, so
+they are unit-testable, and an unrecognised role ranks 0 and sees nothing: an older
+frontend against a newer backend fails closed. Formatters are total — a missing value
+renders as an em dash and an unscored case as "not scored", never as `0.0000`, because
+a console that reports money must not turn absent data into a confident zero.
