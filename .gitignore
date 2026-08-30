@@ -62,6 +62,11 @@ next-env.d.ts
 npm-debug.log*
 .vitest/
 
+# Tunnel binaries
+ngrok.exe
+ngrok.zip
+ngrok/
+
 # IDE, OS, and editor files
 .idea/
 .vscode/
