@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 import json
 
-from revenue_recovery.actions import ActionContext, ActionExecutor
+from revenue_recovery.actions import ActionContext, ActionExecutor, RazorpayRetryProvider, SimulatedRetryProvider
 from revenue_recovery.classification import classify_failure
 from revenue_recovery.clock import iso_now, to_iso, utc_now
 from revenue_recovery.config import QUEUED, Settings
@@ -67,7 +67,13 @@ class PaymentRecoveryService:
         self.database.initialize()
         self.scorer = RecoveryScorer(settings.recovery_model_path) if settings.recovery_model_path.exists() else None
         self.decision_engine = DecisionEngine()
-        self.action_executor = action_executor or ActionExecutor(self.decision_engine)
+        if action_executor is None:
+            if settings.has_razorpay_credentials:
+                retry_provider = RazorpayRetryProvider(settings.razorpay_key_id, settings.razorpay_key_secret)
+            else:
+                retry_provider = SimulatedRetryProvider()
+            action_executor = ActionExecutor(decision_engine=self.decision_engine, retry_provider=retry_provider)
+        self.action_executor = action_executor
         self.task_queue = TaskQueue(
             max_attempts=settings.task_max_attempts,
             backoff_seconds=settings.task_retry_backoff_seconds,

@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
+import requests
+
 from revenue_recovery.baseline import simulate_outcome
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import ApprovedCommunication, CommunicationGenerator
@@ -76,6 +78,70 @@ class SimulatedRetryProvider:
 
     def attempt_retry(self, context: ActionContext) -> bool:
         return simulate_outcome(context.category, context.payment_id, context.retry_count)
+
+
+class RazorpayRetryProvider:
+    """Outbound retry provider calling Razorpay API endpoints when credentials are configured.
+
+    Sits strictly behind the decision engine: ActionExecutor re-evaluates guardrails
+    and decision engine BEFORE attempt_retry is called.
+    """
+
+    def __init__(self, key_id: str, key_secret: str, timeout_seconds: float = 10.0):
+        self.key_id = key_id
+        self.key_secret = key_secret
+        self.timeout_seconds = timeout_seconds
+
+    def attempt_retry(self, context: ActionContext) -> bool:
+        if context.category is FailureCategory.FRAUD_RISK_DECLINE:
+            LOGGER.error(
+                "refusing razorpay API retry call: FRAUD_RISK_DECLINE reached provider",
+                extra={"event_id": context.event_id, "payment_id": mask_identifier(context.payment_id)},
+            )
+            return False
+
+        url = "https://api.razorpay.com/v1/orders"
+        amount_paise = int(round(context.amount * 100))
+        payload = {
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": f"rcpt_{context.event_id}",
+            "notes": {
+                "payment_id": context.payment_id,
+                "retry_count": str(context.retry_count),
+                "recovered_by": "ai_revenue_recovery",
+            },
+        }
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                auth=(self.key_id, self.key_secret),
+                timeout=self.timeout_seconds,
+            )
+            LOGGER.info(
+                "razorpay api retry request completed",
+                extra={
+                    "event_id": context.event_id,
+                    "payment_id": mask_identifier(context.payment_id),
+                    "status_code": response.status_code,
+                },
+            )
+            if response.status_code in (200, 201):
+                data = response.json()
+                return data.get("status") in ("created", "attempted", "paid")
+            return False
+        except Exception as exc:
+            LOGGER.warning(
+                "razorpay api retry request failed",
+                extra={
+                    "event_id": context.event_id,
+                    "payment_id": mask_identifier(context.payment_id),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+
 
 
 class LoggingNotificationProvider:

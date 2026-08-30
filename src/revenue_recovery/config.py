@@ -42,6 +42,8 @@ class Settings:
     assumed_remaining_months: int = 6
     recovery_model_path: Path = Path("models/recovery_model.joblib")
     razorpay_webhook_secret: str = DEFAULT_WEBHOOK_SECRET
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
     webhook_tolerance_seconds: int = DEFAULT_WEBHOOK_TOLERANCE_SECONDS
     log_format: str = ""
     log_level: str = "INFO"
@@ -80,6 +82,10 @@ class Settings:
         return self.razorpay_webhook_secret.strip() == DEFAULT_WEBHOOK_SECRET
 
     @property
+    def has_razorpay_credentials(self) -> bool:
+        return bool(self.razorpay_key_id.strip() and self.razorpay_key_secret.strip())
+
+    @property
     def is_production(self) -> bool:
         return self.environment.strip().lower() == "production"
 
@@ -92,6 +98,8 @@ class Settings:
             database_url=source.get("DATABASE_URL", ""),
             recovery_model_path=Path(source.get("RECOVERY_MODEL_PATH", "models/recovery_model.joblib")),
             razorpay_webhook_secret=source.get("RAZORPAY_WEBHOOK_SECRET", DEFAULT_WEBHOOK_SECRET),
+            razorpay_key_id=source.get("RAZORPAY_KEY_ID", ""),
+            razorpay_key_secret=source.get("RAZORPAY_KEY_SECRET", ""),
             webhook_tolerance_seconds=int(
                 source.get("WEBHOOK_TOLERANCE_SECONDS", str(DEFAULT_WEBHOOK_TOLERANCE_SECONDS))
             ),
