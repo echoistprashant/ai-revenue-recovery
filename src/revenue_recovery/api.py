@@ -51,7 +51,9 @@ def create_app(
     recovery_service = service or PaymentRecoveryService(Database(active_settings.database_target), active_settings)
     app = FastAPI(title="AI Revenue Recovery", version="0.2.0")
     decision_engine = DecisionEngine()
-    communication_generator = CommunicationGenerator()
+    communication_generator = CommunicationGenerator(
+        api_key=active_settings.gemini_api_key if active_settings.has_gemini_key else None
+    )
     application_metrics = ApplicationMetrics()
     users = UserRepository(recovery_service.database)
     signer = TokenSigner(active_settings, signing_key)
@@ -411,7 +413,8 @@ def create_app(
                 for case in recovery_service.get_top_priority_cases(n, tenant_id=viewer.tenant_id)
             ],
         )
-        return AnalystResponse(answer=RevenueAnalyst(tools).answer(request.question))
+        api_key = active_settings.gemini_api_key if active_settings.has_gemini_key else None
+        return AnalystResponse(answer=RevenueAnalyst(tools, api_key=api_key).answer(request.question))
 
     @app.post("/experiments", response_model=ExperimentResponse)
     def experiment(request: ExperimentRequest, viewer: Viewer) -> ExperimentResponse:

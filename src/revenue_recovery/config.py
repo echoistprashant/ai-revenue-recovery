@@ -44,6 +44,8 @@ class Settings:
     razorpay_webhook_secret: str = DEFAULT_WEBHOOK_SECRET
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
+    gemini_api_key: str = ""
+    deterministic_llm_mode: bool = False
     webhook_tolerance_seconds: int = DEFAULT_WEBHOOK_TOLERANCE_SECONDS
     log_format: str = ""
     log_level: str = "INFO"
@@ -86,6 +88,10 @@ class Settings:
         return bool(self.razorpay_key_id.strip() and self.razorpay_key_secret.strip())
 
     @property
+    def has_gemini_key(self) -> bool:
+        return bool(self.gemini_api_key.strip()) and not self.deterministic_llm_mode
+
+    @property
     def is_production(self) -> bool:
         return self.environment.strip().lower() == "production"
 
@@ -93,6 +99,7 @@ class Settings:
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
         source = env if env is not None else dict(os.environ)
         environment = source.get("APP_ENVIRONMENT", "development")
+        llm_mode = source.get("LLM_MODE", "gemini").strip().lower()
         return cls(
             database_path=Path(source.get("REVENUE_RECOVERY_DATABASE", "data/revenue_recovery.db")),
             database_url=source.get("DATABASE_URL", ""),
@@ -100,6 +107,8 @@ class Settings:
             razorpay_webhook_secret=source.get("RAZORPAY_WEBHOOK_SECRET", DEFAULT_WEBHOOK_SECRET),
             razorpay_key_id=source.get("RAZORPAY_KEY_ID", ""),
             razorpay_key_secret=source.get("RAZORPAY_KEY_SECRET", ""),
+            gemini_api_key=source.get("GEMINI_API_KEY", ""),
+            deterministic_llm_mode=llm_mode == "deterministic",
             webhook_tolerance_seconds=int(
                 source.get("WEBHOOK_TOLERANCE_SECONDS", str(DEFAULT_WEBHOOK_TOLERANCE_SECONDS))
             ),
