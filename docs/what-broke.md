@@ -604,3 +604,97 @@ Parameter values a driver interpolated into a failing statement — `UNIQUE cons
 ### 8. Lesson
 
 A regex-based scrubber only knows the shapes it was told about, so this is mitigation and not a guarantee. The finding that generalises is about the boundary rather than the pattern: the moment an exception message stops being written to a stream nobody keeps and starts being written to a column somebody reads, it becomes content that needs a policy. That transition happened in Phase 11 and the policy arrived three phases later.
+
+## Issue #11 — Environment Variable Key Mismatch for Webhook Signing Secret
+
+### Phase
+
+Phase 15 — Block 3 Real Razorpay Integration
+
+### Date
+
+2026-08-30
+
+### Status
+
+FIXED
+
+### Severity
+
+MEDIUM
+
+### 1. Problem
+
+The `.env` file contained `WEBHOOK_SECRET_KEY = "Prashant@2817"`, but `config.py` read `RAZORPAY_WEBHOOK_SECRET`. The application booted using default test fallback values instead of loading the user-provided secret.
+
+### 2. Expected Behavior
+
+The application settings should read the webhook signing secret from `RAZORPAY_WEBHOOK_SECRET` as defined in `.env.example` and `config.py`.
+
+### 3. Actual Behavior
+
+`RAZORPAY_WEBHOOK_SECRET` fell back to `DEFAULT_WEBHOOK_SECRET` ("test_webhook_secret"), leading to signature verification failures when webhooks signed with the real key arrived.
+
+### 4. Root Cause
+
+Variable name mismatch in `.env`.
+
+### 5. Fix
+
+Updated `.env` key to `RAZORPAY_WEBHOOK_SECRET` and updated `config.py` to support explicit Razorpay credentials loading (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`).
+
+### 6. Verification
+
+`tests/test_razorpay_live.py::test_real_webhook_payload_ingestion_end_to_end` passes and verifies signature verification with `RAZORPAY_WEBHOOK_SECRET`.
+
+### 7. Lesson
+
+Maintain explicit alignment between `.env`, `.env.example`, and `config.py` parameter keys.
+
+
+## Issue #12 — Webhook Freshness Check Rejected Static Test Timestamp Epochs
+
+### Phase
+
+Phase 15 — Block 3 Real Razorpay Integration
+
+### Date
+
+2026-08-30
+
+### Status
+
+FIXED
+
+### Severity
+
+LOW
+
+### 1. Problem
+
+A newly written live integration test for webhook payload processing failed with HTTP 401 `Razorpay webhook delivery refused as a possible replay. Delivery timestamp ... sits ... seconds from current UTC clock`.
+
+### 2. Expected Behavior
+
+The simulated payload should pass freshness checks and be ingested into the payment recovery service.
+
+### 3. Actual Behavior
+
+The test payload used a static hardcoded epoch timestamp (`1772198400`), which differed by more than `WEBHOOK_TOLERANCE_SECONDS` (300 seconds) from the current UTC clock.
+
+### 4. Root Cause
+
+Phase 14 security added timestamp freshness validation against current UTC time. Static test timestamps outside the 300s symmetric window are correctly rejected as replays.
+
+### 5. Fix
+
+Updated test suite to dynamically generate `created_at` timestamps using `int(datetime.now(timezone.utc).timestamp())`.
+
+### 6. Verification
+
+`tests/test_razorpay_live.py::test_real_webhook_payload_ingestion_end_to_end` passes with dynamic fresh timestamps.
+
+### 7. Lesson
+
+Tests targeting security components enforcing time freshness must supply dynamic timestamps anchored to `now()` or mock the clock fixture explicitly.
+
