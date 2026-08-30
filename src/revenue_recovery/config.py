@@ -97,7 +97,24 @@ class Settings:
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
-        source = env if env is not None else dict(os.environ)
+        if env is not None:
+            source = dict(env)
+        else:
+            source = dict(os.environ)
+            # Merge local .env file values if present and not overridden by process env
+            dotenv_path = Path(".env")
+            if not dotenv_path.exists():
+                dotenv_path = Path("../.env")
+            if dotenv_path.is_file():
+                for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if k and k not in source:
+                            source[k] = v
+
         environment = source.get("APP_ENVIRONMENT", "development")
         llm_mode = source.get("LLM_MODE", "gemini").strip().lower()
         return cls(
