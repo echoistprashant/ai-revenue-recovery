@@ -17,7 +17,13 @@ from revenue_recovery.schema import METADATA
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` matters when Alembic is driven in-process via
+    # `alembic.command.upgrade` rather than from the command line. The default (True)
+    # marks every logger that already existed as disabled, so anything configured before
+    # the migration stops emitting for the rest of the process. Harmless for the CLI,
+    # which exits; not harmless for a deploy script or a test session that migrates and
+    # then expects the application to keep logging — the test suite hit exactly that.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = METADATA
 

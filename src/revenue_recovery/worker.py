@@ -15,6 +15,7 @@ from revenue_recovery.clock import iso_now
 from revenue_recovery.config import DEFAULT_SETTINGS, Settings
 from revenue_recovery.database import Database, DatabaseConnection
 from revenue_recovery.models import FailureCategory
+from revenue_recovery.observability import safe_database_url, safe_error_text
 from revenue_recovery.tasks import Task, TaskQueue, TaskStatus, TaskType
 
 LOGGER = logging.getLogger(__name__)
@@ -81,12 +82,28 @@ class RecoveryWorker:
                 self._record(connection, task, context, result)
                 self.queue.mark_done(connection, task.task_id)
         except Exception as exc:  # provider or database failure: keep the task visible
-            LOGGER.exception("task execution failed", extra={"task_id": task.task_id})
+            LOGGER.exception(
+                "task execution failed",
+                extra={
+                    "task_id": task.task_id,
+                    "task_type": task.task_type.value,
+                    "attempts": task.attempts,
+                    "error_type": type(exc).__name__,
+                },
+            )
             with self.database.connect() as connection:
-                status = self.queue.mark_failed(connection, task, f"{type(exc).__name__}: {exc}")
+                status = self.queue.mark_failed(connection, task, safe_error_text(exc))
             report.failed += 1
             if status is TaskStatus.FAILED:
-                LOGGER.error("task exhausted its attempts", extra={"task_id": task.task_id})
+                LOGGER.error(
+                    "task exhausted its attempts",
+                    extra={
+                        "task_id": task.task_id,
+                        "task_type": task.task_type.value,
+                        "attempts": task.attempts,
+                        "max_attempts": self.settings.task_max_attempts,
+                    },
+                )
             return
         report.task_ids.append(task.task_id)
         if result.executed:
@@ -147,7 +164,7 @@ class RecoveryWorker:
 
     def run_forever(self, stop_event: threading.Event | None = None) -> None:
         stop = stop_event or threading.Event()
-        LOGGER.info("worker started", extra={"database": self.database.url})
+        LOGGER.info("worker started", extra={"database": safe_database_url(self.database.url)})
         while not stop.is_set():
             report = self.run_once()
             if report.claimed == 0:

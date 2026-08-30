@@ -11,6 +11,7 @@ resolution, and it goes through ``ActionExecutor``, which re-runs the engine.
 """
 
 from dataclasses import asdict
+import logging
 from time import perf_counter
 from typing import Annotated, Callable
 
@@ -21,19 +22,24 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from revenue_recovery.adapters import RazorpayAdapter
 from revenue_recovery.anomaly import gateway_health
 from revenue_recovery.auth import Role, UnknownUserError, User, UserExistsError, UserRepository
+from revenue_recovery.clock import utc_now
 from revenue_recovery.config import DEFAULT_SETTINGS, Settings
 from revenue_recovery.database import Database
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import AnalystTools, ApprovedCommunication, CommunicationGenerator, RevenueAnalyst
 from revenue_recovery.experimentation import ExperimentEvent, run_experiment
 from revenue_recovery.monitoring import ApplicationMetrics, drift_status, population_stability_index
+from revenue_recovery.observability import configure_logging, mask_identifier
 from revenue_recovery.models import AnalystRequest, AnalystResponse, AuditEntry, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, DriftRequest, DriftResponse, EventHistoryItem, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, LoginRequest, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics, ResolveCaseRequest, ResolveCaseResponse, ReviewCase, TokenResponse, UserCreate, UserResponse
 from revenue_recovery.optimization import PaymentHistory, recommend_payment_method, recommend_retry_window
 from revenue_recovery.rate_limit import RateLimiter
-from revenue_recovery.security import TokenError, TokenSigner, WeakPasswordError
+from revenue_recovery.security import TokenError, TokenSigner, WeakPasswordError, resolve_webhook_secret
 from revenue_recovery.service import CaseNotReviewableError, PaymentRecoveryService, UnsupportedFailureCodeError
+from revenue_recovery.webhook_security import check_freshness, delivery_timestamp
 
 BEARER = HTTPBearer(auto_error=False, description="Access token from POST /auth/token")
+
+LOGGER = logging.getLogger(__name__)
 
 
 def create_app(
@@ -49,6 +55,9 @@ def create_app(
     application_metrics = ApplicationMetrics()
     users = UserRepository(recovery_service.database)
     signer = TokenSigner(active_settings, signing_key)
+    # Both secrets that can authorise a write are resolved here, at boot: a bad one is
+    # a startup failure an operator sees, not a 401 discovered in production traffic.
+    webhook_secret = resolve_webhook_secret(active_settings)
     request_limiter = RateLimiter(active_settings.rate_limit_per_minute)
     login_limiter = RateLimiter(active_settings.login_rate_limit_per_minute)
 
@@ -219,19 +228,66 @@ def create_app(
         """
         body = await request.body()
         adapter = RazorpayAdapter()
-        secret = recovery_service.settings.razorpay_webhook_secret
-        if not x_razorpay_signature or not adapter.verify_signature(body, x_razorpay_signature, secret):
+        if not x_razorpay_signature or not adapter.verify_signature(body, x_razorpay_signature, webhook_secret):
+            LOGGER.warning(
+                "razorpay webhook rejected: signature",
+                extra={"reason": "invalid_signature", "signature_present": bool(x_razorpay_signature), "body_bytes": len(body)},
+            )
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Razorpay webhook signature")
         try:
             payload = await request.json()
+        except Exception as exc:
+            # The parser's message can quote the body back, so it is logged and not
+            # returned: a webhook response is one of the few places a caller learns
+            # anything about how this service reads its input.
+            LOGGER.warning("razorpay webhook rejected: unparseable body", extra={"reason": "invalid_json", "body_bytes": len(body)}, exc_info=exc)
+            raise HTTPException(status_code=400, detail="Malformed Razorpay webhook payload") from exc
+
+        # Freshness is checked only after the signature, because the timestamp is only
+        # worth trusting when it is inside bytes that were signed.
+        freshness = check_freshness(
+            delivery_timestamp(payload),
+            now=utc_now(),
+            tolerance_seconds=active_settings.webhook_tolerance_seconds,
+            require_timestamp=active_settings.is_production,
+        )
+        if not freshness.accepted:
+            LOGGER.warning(
+                "razorpay webhook rejected: freshness",
+                extra={"reason": "stale_or_undated", "detail": freshness.reason, "skew_seconds": freshness.skew_seconds},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Razorpay webhook delivery refused as a possible replay. {freshness.reason}",
+            )
+
+        try:
             event = adapter.normalize_event(payload)
-            return recovery_service.process_event(event, tenant_id=active_settings.default_tenant)
+            processed = recovery_service.process_event(event, tenant_id=active_settings.default_tenant)
         except UnsupportedFailureCodeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Malformed Razorpay webhook payload: {exc}") from exc
+            LOGGER.warning("razorpay webhook rejected: unusable payload", extra={"reason": "normalization_failed"}, exc_info=exc)
+            raise HTTPException(status_code=400, detail="Malformed Razorpay webhook payload") from exc
+        LOGGER.info(
+            "razorpay webhook accepted",
+            extra={
+                # Both are Razorpay identifiers and both are join keys back to a real
+                # customer's payment history in the gateway dashboard, so both are masked.
+                # `event_id` is this service's own row id and is left readable: it is what
+                # an operator needs to pull the full record out of the audit trail.
+                "payment_id": mask_identifier(processed.payment_id),
+                "attempt_id": mask_identifier(processed.attempt_id),
+                "event_id": processed.event_id,
+                "failure_category": processed.failure_category.value,
+                "action": processed.action.value,
+                "duplicate": processed.duplicate,
+                "skew_seconds": freshness.skew_seconds,
+            },
+        )
+        return processed
 
     @app.get("/metrics", response_model=RecoveryMetrics)
     def metrics(viewer: Viewer) -> RecoveryMetrics:
@@ -431,4 +487,14 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# Logging is configured for the *process*, not per application object. `create_app` is
+# called by the test suite and by the simulation scripts; a factory that tears the root
+# logger's handlers out from under its caller is a factory that breaks its host — which
+# it did, silently swallowing warnings other tests were asserting on. This module object
+# is what `uvicorn revenue_recovery.api:app` loads, so this line is the API's process
+# entry point and the right place to own root logging.
+configure_logging(
+    DEFAULT_SETTINGS.log_format or ("json" if DEFAULT_SETTINGS.is_production else ""),
+    DEFAULT_SETTINGS.log_level,
+)
 app = create_app()

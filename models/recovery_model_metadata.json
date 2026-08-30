@@ -1,6 +1,7 @@
 {
   "model_version": "recovery-logistic-v1",
   "model_type": "LogisticRegression",
+  "sklearn_version": "1.9.0",
   "seed": 20260827,
   "training_rows": 2195,
   "test_rows": 805,

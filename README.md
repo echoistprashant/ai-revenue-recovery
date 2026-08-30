@@ -64,6 +64,50 @@ These are planned capabilities, not claims about the current implementation.
 
 ## Current Status
 
+**Phase 14 — Security, Observability, and Data Protection.** Both secrets that can
+authorise a write now fail at boot rather than in traffic: production refuses to start
+if `RAZORPAY_WEBHOOK_SECRET` is empty or still the `test_webhook_secret` value published
+in `.env.example`, mirroring the existing `JWT_SECRET_KEY` rule.
+
+Webhook deliveries are checked for freshness against the `created_at` that Razorpay puts
+*inside the signed bytes* — it sends no timestamp header, and editing that field
+invalidates the signature, so the timestamp is trustworthy to exactly the degree the
+signature is. The window is symmetric and 300s by default (`WEBHOOK_TOLERANCE_SECONDS`);
+a delivery from the future is refused as firmly as a stale one. Freshness is checked
+after the signature, and a timestamp is required in production only. Freshness is the
+perimeter, not the guard that protects money — idempotency on
+`(tenant_id, payment_id, attempt_id)` is, and a test proves two byte-identical validly
+signed in-window deliveries reach the gateway exactly once.
+
+Logs are emitted as one JSON object per line (`LOG_FORMAT=json`, the production default)
+with the extras the call site attached. Gateway identifiers are masked to a readable
+prefix plus a truncated SHA-256 — `pay_***138504fc6bc7` — deterministic so two lines
+about the same payment still join, without carrying the value needed to look that
+customer up in the gateway dashboard. Secret-named keys are blanked over every record,
+tracebacks are reduced to `error_type` and `error_message`, customer-facing message
+bodies are never logged, and credentials quoted by a third-party exception are stripped
+before the text is stored in `tasks.last_error` or shown to an operator. No new
+monitoring stack was added: the gap was unstructured, unfilterable log lines, which is a
+formatter problem, and the existing operational-metrics and PSI drift surfaces already
+answer health and distribution shift.
+
+[docs/data-protection.md](docs/data-protection.md) is a factual inventory written by
+reading `schema.py` and every logging call site — every column that relates to a person,
+what is deliberately absent (no name, email, phone, address, card number, last-four,
+expiry, CVV, token, mandate reference, IP, or user-agent; the platform reads the
+gateway's *decision*, never the instrument), and the retention stance. That stance is
+**documented, not enforced**: there is no deletion job, no `retention_days` setting, and
+no data-subject endpoint, and the document says so rather than implying a shipped
+feature.
+
+The scikit-learn version mismatch that warned on every model load is fixed by pinning
+the dependency to the version the committed artifact was trained with, not by retraining
+in-container — the published metadata describes one specific artifact, and rebuilding at
+image-build time would make those numbers stop describing what runs. The pin cannot rot:
+`sklearn_version` is recorded in both the artifact and the metadata, and four tests tie
+artifact, runtime, dependency specifier, and metadata together, so a dependency bump
+without a retrain is a failed test rather than a warning in a log.
+
 **Phase 13 — Production Next.js Control Centre.** A Next.js 16 App Router frontend
 (`frontend/`) at full parity with the Streamlit dashboard across all thirteen modules.
 The API token is held in an httpOnly, `SameSite=Strict`, `Secure` cookie written by the
@@ -115,9 +159,13 @@ and Streamlit Control Center integration.
 The policy learner remains offline-only. Docker and CI package and verify the
 system; synthetic data and simulated webhook ingestion are fully supported.
 
-Not yet done (Phase 14): structured logging, backups, secrets-manager integration,
-PII controls, webhook replay protection, and a webhook secret that fails closed
-instead of defaulting to a publicly known value.
+Still open: retention enforcement (documented in
+[docs/data-protection.md](docs/data-protection.md) §5 as a stance, with no deletion job
+in code), backups, secrets-manager integration, encryption at rest, and log-sink
+retention. The real Razorpay webhook path has been exercised only with locally signed
+payloads — that tests this code's understanding of the format, not Razorpay's actual
+bytes — and a signed-in browser session against the live API has not been run
+end to end.
 
 ## Local Setup
 

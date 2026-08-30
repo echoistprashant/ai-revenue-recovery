@@ -13,6 +13,18 @@ DEFAULT_TENANT = "default"
 # to generate.
 MIN_SIGNING_KEY_LENGTH = 32
 
+# The webhook secret every checkout of this repository ships with. It is published in
+# `.env.example`, so it authenticates nobody: production refuses to boot while it is
+# still in place (see `revenue_recovery.security.resolve_webhook_secret`).
+DEFAULT_WEBHOOK_SECRET = "test_webhook_secret"
+
+# How far a signed webhook delivery's own timestamp may sit from now before it is
+# refused as a replay. Razorpay sends no timestamp header, so the value checked is
+# the `created_at` inside the signed body — an attacker cannot edit it without
+# invalidating the signature. Five minutes absorbs ordinary clock skew and gateway
+# retry latency while keeping a captured delivery useless within the hour.
+DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 300
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -29,7 +41,10 @@ class Settings:
     synthetic_seed: int = 20260827
     assumed_remaining_months: int = 6
     recovery_model_path: Path = Path("models/recovery_model.joblib")
-    razorpay_webhook_secret: str = "test_webhook_secret"
+    razorpay_webhook_secret: str = DEFAULT_WEBHOOK_SECRET
+    webhook_tolerance_seconds: int = DEFAULT_WEBHOOK_TOLERANCE_SECONDS
+    log_format: str = ""
+    log_level: str = "INFO"
     environment: str = "development"
     task_execution_mode: str = INLINE
     task_max_attempts: int = 3
@@ -51,11 +66,18 @@ class Settings:
             raise ValueError("access_token_ttl_minutes must be positive")
         if self.rate_limit_per_minute <= 0 or self.login_rate_limit_per_minute <= 0:
             raise ValueError("rate limits must be positive")
+        if self.webhook_tolerance_seconds <= 0:
+            raise ValueError("webhook_tolerance_seconds must be positive")
 
     @property
     def database_target(self) -> str | Path:
         """Explicit URL when configured, otherwise the SQLite file path."""
         return self.database_url or self.database_path
+
+    @property
+    def uses_default_webhook_secret(self) -> bool:
+        """True while the publicly published example secret is still configured."""
+        return self.razorpay_webhook_secret.strip() == DEFAULT_WEBHOOK_SECRET
 
     @property
     def is_production(self) -> bool:
@@ -69,7 +91,15 @@ class Settings:
             database_path=Path(source.get("REVENUE_RECOVERY_DATABASE", "data/revenue_recovery.db")),
             database_url=source.get("DATABASE_URL", ""),
             recovery_model_path=Path(source.get("RECOVERY_MODEL_PATH", "models/recovery_model.joblib")),
-            razorpay_webhook_secret=source.get("RAZORPAY_WEBHOOK_SECRET", "test_webhook_secret"),
+            razorpay_webhook_secret=source.get("RAZORPAY_WEBHOOK_SECRET", DEFAULT_WEBHOOK_SECRET),
+            webhook_tolerance_seconds=int(
+                source.get("WEBHOOK_TOLERANCE_SECONDS", str(DEFAULT_WEBHOOK_TOLERANCE_SECONDS))
+            ),
+            # Empty means "leave logging alone", which is what tests and an
+            # interactive shell want. Production defaults to JSON so a log line is
+            # machine-readable without an operator remembering to set anything.
+            log_format=source.get("LOG_FORMAT", ""),
+            log_level=source.get("LOG_LEVEL", "INFO"),
             environment=environment,
             task_execution_mode=source.get("TASK_EXECUTION_MODE", INLINE),
             task_max_attempts=int(source.get("TASK_MAX_ATTEMPTS", "3")),

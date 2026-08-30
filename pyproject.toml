@@ -14,7 +14,11 @@ dependencies = [
   "pydantic>=2.11,<3",
   "pyjwt>=2.10,<3",
   "requests>=2.32,<3",
-  "scikit-learn>=1.7,<1.8",
+  # Pinned to the minor release the committed model artifact was trained with.
+  # scikit-learn warns and does not guarantee unpickling across minor versions,
+  # and `models/recovery_model.joblib` records the exact training version so a
+  # drift between this pin and the artifact is a test failure, not a warning.
+  "scikit-learn>=1.9,<1.10",
   "sqlalchemy>=2.0,<2.1",
   "streamlit>=1.48,<1.49",
   "uvicorn>=0.35,<0.36",
@@ -28,6 +32,9 @@ postgres = [
 ]
 dev = [
   "httpx>=0.28,<0.29",
+  # Used by tests/test_scoring.py to check the scikit-learn pin actually admits the
+  # version recorded inside the committed model artifact.
+  "packaging>=24.0",
   "pytest>=8.4,<8.5",
 ]
 

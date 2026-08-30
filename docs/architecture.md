@@ -244,3 +244,81 @@ they are unit-testable, and an unrecognised role ranks 0 and sees nothing: an ol
 frontend against a newer backend fails closed. Formatters are total — a missing value
 renders as an em dash and an unscored case as "not scored", never as `0.0000`, because
 a console that reports money must not turn absent data into a confident zero.
+
+## Decision 18 — Two Guards Against a Replayed Webhook, and Only One of Them Protects Money
+
+An HMAC signature proves a payload came from someone holding the secret. It proves
+nothing about *when*. Anyone who captures one delivery — a proxy log, a mirrored request,
+a misconfigured egress — holds bytes that stay valid forever.
+
+Razorpay sends no timestamp header. Stripe's `Stripe-Signature` carries a `t=` element;
+there is no equivalent here, so there is nothing outside the body to check. What Razorpay
+does send is a `created_at` epoch second at the top level of the event, and that field is
+inside the signed bytes: editing it invalidates the signature. So the timestamp is
+trustworthy to exactly the degree the signature is, and comparing it against the local
+clock turns a captured delivery into something that expires. The window is symmetric and
+defaults to 300s — a delivery from the future is refused as firmly as a stale one, because
+a sender whose clock runs ahead would otherwise widen the replay window by however far it
+runs. Freshness is checked after the signature, never before, because a timestamp is only
+worth trusting once it is known to be inside signed bytes.
+
+Freshness is the weaker of the two guards, and the distinction matters more than either
+guard alone:
+
+- **Freshness** rejects a delivery too old to be a live gateway callback. It is a
+  perimeter check with a tunable window, and a replay inside that window passes it.
+- **Idempotency** on `UNIQUE (tenant_id, payment_id, attempt_id)` means a fresh duplicate
+  returns the first stored decision without re-running the pipeline or executing an action
+  again. That is the guard that prevents a second charge, and it is the one that holds
+  against a genuine Razorpay retry as well as against a fast replay.
+
+The idempotency key includes `attempt_id` deliberately: without it, a real second attempt
+on the same payment would be swallowed as a duplicate, which fails in the opposite and
+quieter direction. The key is scoped to the tenant because a gateway identifier only has
+meaning inside the account that issued it, and a global key would let one tenant discover
+another's payment IDs through the duplicate response.
+
+`require_timestamp` is enabled in production only. A genuine Razorpay delivery always
+carries `created_at`, so an undated payload in production is either not from Razorpay or
+has been stripped to defeat this check. Development leaves it off so the simulation
+scripts and the hand-built payloads in the test suite keep working — which is why adding
+this guard required changing no existing test.
+
+## Decision 19 — Identifiers Are Masked in Logs and Stored in the Clear
+
+These are two different exposures and they get different answers.
+
+The database is the asset the access controls exist to protect: authentication, a
+per-request role check, a per-request re-read of the account row, and tenant scoping all
+sit in front of it. Inside it, `payment_id` and `attempt_id` are the idempotency key that
+stops a customer being charged twice, `customer_id` is how an operator finds a case and
+what a retry is submitted against, and all three are what makes a past decision
+explainable. Masking them there would break the product and protect nothing.
+
+Logs are different. They are copied to places the database is not — a shipper, a laptop, a
+support ticket, a screenshot in a chat — and a raw `customer_id` in a log line is a
+copy-and-paste path into the Razorpay dashboard and a real person's payment history. So
+`mask_identifier()` keeps a readable four-character prefix, so an operator can tell a
+payment id from a customer id at a glance, and appends a truncated SHA-256 of the whole
+value, so two lines about the same entity still join. `None` and empty stay themselves: an
+absent identifier is information, and inventing a digest for it would hide that the field
+was missing.
+
+This is masking, not anonymisation, and the code says so rather than implying otherwise.
+An attacker holding a list of candidate identifiers can hash them and match. What it
+removes is the realistic exposure for a log file.
+
+The internal `event_id` is left readable on purpose. It is this service's own row id, it
+means nothing outside this database, and it is what an operator needs to pull the full
+record out of the audit trail. Masking it would cost the diagnosis and protect nothing.
+
+Two consequences follow from treating logs as a sink that leaves the trust boundary.
+Exceptions are reduced to `error_type` and `error_message` with no traceback, because
+frame text can quote input the record should not carry. And any value whose *key* names a
+secret is replaced wholesale, over every emitted record — defence in depth, since no call
+site passes a secret and the point is that it would not matter if one did.
+
+`configure_logging()` runs only from a process entry point — the module object uvicorn
+loads, and the worker script — never from a factory. A library that replaces the root
+logger's handlers breaks its host, and `create_app` is called by the test suite and the
+simulation scripts as often as by a deployment.

@@ -19,6 +19,7 @@ from revenue_recovery.baseline import simulate_outcome
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.llm_boundary import ApprovedCommunication, CommunicationGenerator
 from revenue_recovery.models import FailureCategory, RecoveryAction
+from revenue_recovery.observability import mask_identifier
 from revenue_recovery.tasks import TaskType
 
 LOGGER = logging.getLogger(__name__)
@@ -79,9 +80,17 @@ class SimulatedRetryProvider:
 
 class LoggingNotificationProvider:
     def send(self, context: ActionContext, message: str) -> str:
+        # The message body is deliberately not logged. It is customer-facing prose
+        # about a specific failed payment, the log is copied to places the database is
+        # not, and the event id is enough to retrieve it from the audit trail.
         LOGGER.info(
             "notification dispatched",
-            extra={"event_id": context.event_id, "payment_id": context.payment_id},
+            extra={
+                "event_id": context.event_id,
+                "payment_id": mask_identifier(context.payment_id),
+                "action_category": context.category.value,
+                "message_length": len(message),
+            },
         )
         return f"logged:{context.event_id}"
 

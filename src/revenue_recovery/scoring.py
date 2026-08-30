@@ -1,11 +1,15 @@
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 from pathlib import Path
 
 import joblib
 import pandas as pd
+import sklearn
 
 from revenue_recovery.models import FailureCategory, PaymentEventCreate
+
+LOGGER = logging.getLogger(__name__)
 
 
 CATEGORICAL_FEATURES = ["failure_category", "payment_method"]
@@ -57,10 +61,35 @@ def calculate_revenue_at_risk(subscription_value: float, assumed_remaining_month
 
 
 class RecoveryScorer:
+    """Loads the trained pipeline and turns one event into its four scores.
+
+    The artifact records the scikit-learn version that pickled it. Unpickling across
+    a minor version is not guaranteed by scikit-learn, and the failure mode is silent:
+    an estimator can load with attributes missing and go on returning numbers. So a
+    mismatch is logged with both versions and the fix, rather than left to the
+    library's own warning, which names neither the artifact nor what to do.
+
+    Loading still proceeds. Refusing would take the whole service down over a
+    condition that is usually a stale image, and the deterministic guardrails sit
+    between any score and any action.
+    """
+
     def __init__(self, artifact_path: Path):
         artifact = joblib.load(artifact_path)
         self.pipeline = artifact["pipeline"]
         self.model_version = artifact["model_version"]
+        self.trained_with_sklearn = artifact.get("sklearn_version")
+        if self.trained_with_sklearn and self.trained_with_sklearn != sklearn.__version__:
+            LOGGER.warning(
+                "model artifact was trained with a different scikit-learn version",
+                extra={
+                    "artifact_path": str(artifact_path),
+                    "model_version": self.model_version,
+                    "trained_with_sklearn": self.trained_with_sklearn,
+                    "runtime_sklearn": sklearn.__version__,
+                    "remedy": "install the pinned scikit-learn, or retrain with scripts/train_recovery_model.py",
+                },
+            )
 
     def score(
         self,

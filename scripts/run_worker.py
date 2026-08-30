@@ -18,6 +18,7 @@ from pathlib import Path
 
 from revenue_recovery.config import DEFAULT_SETTINGS
 from revenue_recovery.database import Database
+from revenue_recovery.observability import configure_logging
 from revenue_recovery.worker import RecoveryWorker
 
 
@@ -40,10 +41,17 @@ def main() -> None:
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    # The worker is a process entry point, so it owns root logging. JSON when the
+    # deployment asked for it (or in production), and the readable single-line format
+    # otherwise, because this script is also run by hand.
+    if not configure_logging(
+        DEFAULT_SETTINGS.log_format or ("json" if DEFAULT_SETTINGS.is_production else ""),
+        args.log_level,
+    ):
+        logging.basicConfig(
+            level=getattr(logging, args.log_level.upper(), logging.INFO),
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
     worker = build_worker(args.database, args.batch_size, args.poll_seconds)
 
     if args.once:

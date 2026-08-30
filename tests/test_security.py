@@ -11,16 +11,18 @@ from pathlib import Path
 import jwt
 import pytest
 
-from revenue_recovery.config import MIN_SIGNING_KEY_LENGTH, Settings
+from revenue_recovery.config import DEFAULT_WEBHOOK_SECRET, MIN_SIGNING_KEY_LENGTH, Settings
 from revenue_recovery.security import (
     MAX_PASSWORD_BYTES,
     MIN_PASSWORD_LENGTH,
+    InsecureWebhookSecretError,
     MissingSigningKeyError,
     TokenError,
     TokenSigner,
     WeakPasswordError,
     hash_password,
     resolve_signing_key,
+    resolve_webhook_secret,
     verify_password,
 )
 
@@ -157,3 +159,39 @@ def test_missing_and_empty_tokens_are_rejected() -> None:
     for value in ("", "   ", "not.a.token"):
         with pytest.raises(TokenError):
             signer.verify(value)
+
+
+# --- the webhook signing secret -----------------------------------------------
+#
+# The same reasoning as the JWT key, applied to the other secret that can authorise a
+# write. `test_webhook_secret` is published in `.env.example` and in this repository's
+# history, so a production deployment still carrying it would accept invented failed
+# payments from anyone who has read the repo.
+
+
+def test_production_refuses_the_published_default_webhook_secret() -> None:
+    with pytest.raises(InsecureWebhookSecretError, match="published example value"):
+        resolve_webhook_secret(settings_for("production", razorpay_webhook_secret=DEFAULT_WEBHOOK_SECRET))
+
+
+def test_production_refuses_an_unset_webhook_secret() -> None:
+    with pytest.raises(InsecureWebhookSecretError, match="is not set"):
+        resolve_webhook_secret(settings_for("production", razorpay_webhook_secret=""))
+
+
+def test_production_accepts_a_real_webhook_secret() -> None:
+    real = "a-real-looking-webhook-secret-value-32ch"
+    assert resolve_webhook_secret(settings_for("production", razorpay_webhook_secret=real)) == real
+
+
+def test_a_short_webhook_secret_is_warned_about_but_accepted(caplog) -> None:
+    """Razorpay lets the operator choose the secret, so refusing a short but genuine
+    one would block a correct deployment. The weakness is logged instead."""
+    with caplog.at_level("WARNING"):
+        assert resolve_webhook_secret(settings_for("production", razorpay_webhook_secret="short")) == "short"
+    assert "shorter than recommended" in caplog.text
+
+
+def test_development_leaves_the_default_webhook_secret_alone() -> None:
+    """The simulation scripts and the test suite sign with it on purpose."""
+    assert resolve_webhook_secret(settings_for("development")) == DEFAULT_WEBHOOK_SECRET

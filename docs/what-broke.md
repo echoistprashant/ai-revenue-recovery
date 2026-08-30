@@ -377,3 +377,230 @@ Classify HTTP failures by status code, not by the exception type the transport h
 
 
 
+## Issue #7 — The Worker Wrote the PostgreSQL Password Into Every Log Sink
+
+### Phase
+
+Phase 14 — Security, Observability, and Data Protection
+
+### Date
+
+2026-08-30
+
+### Status
+
+FIXED
+
+### Severity
+
+HIGH
+
+### 1. Problem
+
+Phase 14 began with a review of every logging call site, looking for customer identifiers. It found something worse than an identifier.
+
+### 2. Expected Behavior
+
+A startup log line names the database the worker connected to, so an operator can confirm it is the intended one. It should not carry the credential used to reach it.
+
+### 3. Actual Behavior
+
+`worker.py` logged `extra={"database": self.database.url}`. For any deployment with `DATABASE_URL` set, that URL is `postgresql+psycopg://revenue:<password>@host:5432/db`, and the password went to stdout on every worker start — into the container log, into whatever shipper collects it, and into every retained copy.
+
+### 4. Reproduction
+
+Set `DATABASE_URL=postgresql+psycopg://revenue:s3cr3t-pw@localhost:5432/revenue_recovery`, start `python scripts/run_worker.py`, and read the first log line.
+
+### 5. Root Cause
+
+A SQLAlchemy URL is a single string that happens to contain a credential. `self.database.url` reads like a harmless connection descriptor at the call site, and it is one on SQLite, which is what development uses — so the line looked correct throughout every phase where it was written and reviewed. The dual-driver work in Phase 11 changed what that string contains without changing the line that logs it.
+
+### 6. Fix
+
+`observability.safe_database_url()` splits the URL, replaces the userinfo password with `<redacted>`, and keeps the scheme, user, host, port, and database name, which are the operationally useful parts. The worker's startup line now passes through it. A SQLite URL, having no userinfo, is returned unchanged.
+
+Defence in depth was added rather than relying on this one fix: `JsonFormatter` now passes every emitted record through `redact()`, which blanks the value of any key named after a secret. A future call site that logs a raw credential under a key like `password` or `token` still does not reach the sink.
+
+### 7. Verification
+
+`tests/test_observability.py::test_a_database_url_is_logged_without_its_password` asserts the password is gone and the host and database name survive; `test_a_sqlite_url_is_left_alone` asserts the development path is unchanged. `test_the_formatter_redacts_a_secret_passed_through_extra` covers the second layer.
+
+### 8. Lesson
+
+Grep the log call sites, do not reason about them. This line was read during code review in three separate phases and looked right every time, because on the driver those reviews were running it *was* right. A value that is safe to log under one configuration is not therefore safe to log — and the review that catches it is the one that asks what the string contains in production, not what it contains locally.
+
+## Issue #8 — A Migration Silently Disabled the Application's Loggers
+
+### Phase
+
+Phase 14 — Security, Observability, and Data Protection
+
+### Date
+
+2026-08-30
+
+### Status
+
+FIXED
+
+### Severity
+
+MEDIUM
+
+### 1. Problem
+
+Two new tests asserting on log output passed when run alone and failed when run in the full suite. `caplog.text` was empty.
+
+### 2. Expected Behavior
+
+`caplog` captures a `logging.warning(...)` emitted during a test, regardless of what earlier tests in the session did.
+
+### 3. Actual Behavior
+
+```text
+assert "shorter than recommended" in caplog.text
+AssertionError: assert 'shorter than recommended' in ''
+```
+
+Failing for both `tests/test_security.py::test_a_short_webhook_secret_is_warned_about_but_accepted` and `tests/test_scoring.py::test_a_mismatched_artifact_warns_with_both_versions_and_still_loads`, while `python -m pytest tests/test_security.py` alone was green.
+
+### 4. Reproduction
+
+`python -m pytest tests/test_migrations.py tests/test_security.py::test_a_short_webhook_secret_is_warned_about_but_accepted` fails. Either file alone passes. Bisecting file-by-file against the failing test is what identified `tests/test_migrations.py`.
+
+### 5. Root Cause
+
+`migrations/env.py` calls `logging.config.fileConfig(config.config_file_name)`. That function's `disable_existing_loggers` parameter defaults to `True`, which sets `.disabled = True` on every logger that already existed. `tests/test_migrations.py` drives Alembic in-process via `alembic.command.upgrade`, so from that point in the session onward, `revenue_recovery.*` loggers emitted nothing.
+
+The first suspect was wrong. `configure_logging()` also replaces root handlers, and a production `create_app(...)` in the new webhook tests calls it — so that was fixed first (see below) and the failure persisted, which is what pointed at Alembic.
+
+### 6. Fix
+
+`fileConfig(config.config_file_name, disable_existing_loggers=False)`, with a comment explaining that the default is only safe for the CLI, which exits.
+
+The unrelated defect found while chasing this one was fixed separately; see Issue #9.
+
+### 7. Verification
+
+The full suite is green at 294 passed. `tests/test_observability.py::test_a_programmatic_migration_leaves_existing_loggers_enabled` runs a migration and asserts a logger created beforehand is still enabled; reverting `disable_existing_loggers=False` makes it fail, and restoring it makes it pass, so the guard is known to test something.
+
+### 8. Lesson
+
+A test that fails only in a suite is reporting global state, and logging is global state that three separate libraries feel entitled to own. Two lessons, and the second is the one that generalises: when a fix does not clear the failure, the fix was for a different bug — keep it if it stands on its own merit, but stop treating it as the explanation. Both changes here were correct; only one was the cause.
+
+## Issue #9 — Constructing an Application Object Tore Out the Caller's Logging
+
+### Phase
+
+Phase 14 — Security, Observability, and Data Protection
+
+### Date
+
+2026-08-30
+
+### Status
+
+FIXED
+
+### Severity
+
+MEDIUM
+
+### 1. Problem
+
+The first version of the structured-logging work called `configure_logging()` from inside `create_app()`, which is the wrong place by a rule the module's own docstring already stated.
+
+### 2. Expected Behavior
+
+`create_app(service, settings=...)` builds and returns a FastAPI application. It is a factory: the test suite calls it dozens of times, the simulation scripts call it, and the webhook tests call it with production settings. Calling it should have no effect outside the object it returns.
+
+### 3. Actual Behavior
+
+`configure_logging()` removes every existing root handler before installing its own — deliberately, so a deployment gets one JSON line per record instead of that line plus uvicorn's plain-text copy. Called from a factory, that meant any `create_app(...)` with `LOG_FORMAT=json` or production settings silently detached pytest's `caplog` handler and any handler the host process had configured, for the remainder of the process.
+
+### 4. Reproduction
+
+Construct an app with production settings, then assert on a log record emitted afterwards:
+
+```python
+create_app(service, settings=Settings(environment="production", ...), signing_key="k" * 40)
+logging.getLogger("revenue_recovery.x").warning("visible?")   # not captured
+```
+
+### 5. Root Cause
+
+Root-logger configuration is process-wide state, and a factory is not a process. `observability.py`'s docstring says the module is called from entry points only; the first implementation put the call in the most convenient place — the one function every entry point already goes through — which is exactly the wrong shape, because non-entry-points go through it too.
+
+### 6. Fix
+
+Moved to the two genuine process entry points:
+
+- `src/revenue_recovery/api.py` module tail, next to `app = create_app()`. That module object is what `uvicorn revenue_recovery.api:app` loads, so it is the API's entry point.
+- `scripts/run_worker.py`, which falls back to the readable single-line `basicConfig` format when JSON was not asked for, since it is also run by hand.
+
+`create_app()` retains only `resolve_webhook_secret(...)`, which validates configuration and mutates nothing global.
+
+### 7. Verification
+
+`tests/test_observability.py::test_configure_logging_does_nothing_unless_json_was_asked_for` and `test_configure_logging_installs_the_json_handler_when_asked` pin the function's own contract, the latter restoring the original handlers in a `finally` block so it does not commit the same sin it tests for. The two `caplog` assertions that motivated the investigation now pass in the full suite.
+
+### 8. Lesson
+
+This one was written down before it was violated — the docstring stated the rule, and the first implementation broke it anyway. A convention only holds if something enforces it, and the enforceable version of "only entry points configure logging" is that the function lives nowhere a non-entry-point would naturally call it.
+
+## Issue #10 — A Stored Task Error Could Carry the Credentials It Quoted
+
+### Phase
+
+Phase 14 — Security, Observability, and Data Protection
+
+### Date
+
+2026-08-30
+
+### Status
+
+FIXED
+
+### Severity
+
+MEDIUM
+
+### 1. Problem
+
+`tasks.last_error` stored `f"{type(exc).__name__}: {exc}"` verbatim, and that column is read by operators in the frontend. The same verbatim text was returned to the analyst chat when a read-only tool failed.
+
+### 2. Expected Behavior
+
+A stored error names what failed and where, so an operator can diagnose a stuck task without reading the container logs.
+
+### 3. Actual Behavior
+
+Third-party exception messages were not written with a durable store in mind, and two shapes in this project's own dependency set quote a credential:
+
+- A SQLAlchemy connection failure quotes the URL it dialled — `postgresql+psycopg://revenue:<password>@host:5432/db`.
+- An HTTP failure against Google's Generative Language API quotes the request URL, and that API takes its key as `?key=<api key>`.
+
+Either one lands in a database column and on an operator's screen.
+
+### 4. Reproduction
+
+Inject a retry provider that raises `RuntimeError("connect to postgresql+psycopg://revenue:s3cr3t-pw@db.internal:5432/recovery failed via https://api.example.com/charge?key=AIzaSyREAL")`, run the worker over the queued task, and read `tasks.last_error`.
+
+### 5. Root Cause
+
+The exception message was treated as diagnostic text, which it is, and not as attacker-supplied-or-credential-bearing content, which it also is. Nothing in the codebase had previously stored a third-party message durably; Phase 11's durable queue introduced the column that made it persistent, and the LLM boundary's tool-failure path made it operator-visible.
+
+### 6. Fix
+
+`observability.safe_error_text(exc, limit=...)` formats the exception, substitutes a URL userinfo password and any secret-named query parameter with `<redacted>`, and truncates to fit the column. Applied at both sinks: `worker.py`'s `mark_failed(...)` call, and `llm_boundary.py`'s tool-failure reply.
+
+Parameter values a driver interpolated into a failing statement — `UNIQUE constraint failed: payment_events.payment_id [pay_abc]` — are deliberately kept. They are identifiers already stored in that same tenant's own row, so removing them would cost the diagnosis and disclose nothing new.
+
+### 7. Verification
+
+`tests/test_worker.py::test_a_stored_task_error_does_not_keep_the_credentials_it_quoted` drives a real failure through the queue and asserts neither secret survives in `tasks.last_error` while `RuntimeError`, the host, and the endpoint path all do. Six tests in `tests/test_observability.py` pin the scrubber itself, including that a word merely ending in `key` (`monkey=banana`) is not treated as a credential and that driver-interpolated identifiers are kept.
+
+### 8. Lesson
+
+A regex-based scrubber only knows the shapes it was told about, so this is mitigation and not a guarantee. The finding that generalises is about the boundary rather than the pattern: the moment an exception message stops being written to a stream nobody keeps and starts being written to a column somebody reads, it becomes content that needs a policy. That transition happened in Phase 11 and the policy arrived three phases later.

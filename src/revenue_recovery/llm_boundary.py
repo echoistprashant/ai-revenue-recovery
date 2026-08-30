@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from revenue_recovery.models import FailureCategory, RecoveryAction
+from revenue_recovery.observability import safe_error_text
 
 
 @dataclass(frozen=True)
@@ -68,5 +69,10 @@ class RevenueAnalyst:
                 result = self.tools.call("get_recovery_metrics")
                 source = "get_recovery_metrics"
         except Exception as exc:
-            return f"I could not answer from project data because the approved analytics tool failed: {exc}"
+            # Scrubbed: this string is rendered to an operator, and a database or
+            # HTTP failure quotes the URL it dialled, credentials included.
+            return (
+                "I could not answer from project data because the approved analytics "
+                f"tool failed: {safe_error_text(exc, limit=300)}"
+            )
         return f"Source: {source}. Project data: {result}. No financial action was executed."

@@ -252,3 +252,46 @@ def test_worker_report_counts_requeued_tasks(
     report = queued_service.run_due_tasks(now=to_iso(utc_now() + timedelta(days=2)))
     assert report["requeued"] == 1
     assert report["claimed"] == 1
+
+
+class LeakyRetryProvider:
+    """A provider whose failure quotes a URL with credentials in it.
+
+    Not contrived: this is the shape of a SQLAlchemy connection error and of an HTTP
+    client error against an API that takes its key as a query parameter.
+    """
+
+    def attempt_retry(self, context) -> bool:
+        raise RuntimeError(
+            "upstream call failed: postgresql+psycopg://revenue:s3cr3t-pw@db.internal:5432/recovery"
+            " and https://api.example.com/charge?key=AIzaSyREAL"
+        )
+
+
+def test_a_stored_task_error_does_not_keep_the_credentials_it_quoted(
+    queued_service: PaymentRecoveryService, event_payload: dict
+) -> None:
+    """`tasks.last_error` is read by operators and shown in the dashboard, so it is a
+    log sink in every respect that matters."""
+    processed = queued_service.process_event(PaymentEventCreate(**event_payload))
+    settings = replace(queued_service.settings, task_retry_backoff_seconds=1)
+    worker = RecoveryWorker(
+        queued_service.database,
+        settings,
+        ActionExecutor(retry_provider=LeakyRetryProvider()),
+        TaskQueue(max_attempts=settings.task_max_attempts, backoff_seconds=1),
+    )
+    assert worker.run_once(now=to_iso(utc_now() + timedelta(days=2))).failed == 1
+
+    with queued_service.database.connect() as connection:
+        stored = str(
+            connection.fetch_one(
+                "SELECT last_error FROM tasks WHERE event_id = :id", {"id": processed.event_id}
+            )["last_error"]
+        )
+    assert "s3cr3t-pw" not in stored
+    assert "AIzaSyREAL" not in stored
+    # Still diagnosable: the type, the host, and the endpoint all survive.
+    assert "RuntimeError" in stored
+    assert "db.internal:5432/recovery" in stored
+    assert "api.example.com/charge" in stored

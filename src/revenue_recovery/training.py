@@ -6,6 +6,7 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
+import sklearn
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -116,6 +117,10 @@ def train_and_evaluate(output_path: Path, metadata_path: Path, seed: int = 20260
     metadata = {
         "model_version": MODEL_VERSION,
         "model_type": "LogisticRegression",
+        # The library version that produced the pickle inside the artifact. scikit-learn
+        # does not promise cross-minor unpickling, so this is what the runtime compares
+        # against and what the dependency pin is checked against.
+        "sklearn_version": sklearn.__version__,
         "seed": seed,
         "training_rows": int(len(train)),
         "test_rows": int(len(test)),
@@ -144,6 +149,9 @@ def train_and_evaluate(output_path: Path, metadata_path: Path, seed: int = 20260
         "synthetic_data_disclaimer": "Metrics are from reproducible synthetic data, not production performance.",
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"pipeline": pipeline, "model_version": MODEL_VERSION}, output_path)
+    joblib.dump(
+        {"pipeline": pipeline, "model_version": MODEL_VERSION, "sklearn_version": sklearn.__version__},
+        output_path,
+    )
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return metadata

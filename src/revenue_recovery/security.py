@@ -15,22 +15,29 @@ Two rules shape this module:
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 import secrets
 
 import bcrypt
 import jwt
 
 from revenue_recovery.clock import to_iso, utc_now
-from revenue_recovery.config import MIN_SIGNING_KEY_LENGTH, Settings
+from revenue_recovery.config import DEFAULT_WEBHOOK_SECRET, MIN_SIGNING_KEY_LENGTH, Settings
 
 # bcrypt truncates at 72 bytes and raises on longer input from 4.1 onward. Rejecting
 # early gives a clear error instead of a library traceback on a registration form.
 MAX_PASSWORD_BYTES = 72
 MIN_PASSWORD_LENGTH = 12
 
+LOGGER = logging.getLogger(__name__)
+
 
 class MissingSigningKeyError(RuntimeError):
     """Raised when a production deployment has no usable JWT signing key."""
+
+
+class InsecureWebhookSecretError(RuntimeError):
+    """Raised when a production deployment has no usable webhook signing secret."""
 
 
 class WeakPasswordError(ValueError):
@@ -90,6 +97,43 @@ def resolve_signing_key(settings: Settings) -> str:
             "signing key, because anyone holding it can mint an admin token."
         )
     return secrets.token_urlsafe(32)
+
+
+def resolve_webhook_secret(settings: Settings) -> str:
+    """Return the Razorpay webhook secret, or raise in production when it is unusable.
+
+    The same reasoning as :func:`resolve_signing_key`, applied to the other secret
+    that grants the ability to write a payment event. ``test_webhook_secret`` is
+    published in ``.env.example`` and in this repository's history, so anyone can
+    forge a signature with it: a production deployment that still carries it would
+    accept invented failed payments from the internet and run them through the
+    decision engine. Refusing to boot is louder than a log line nobody reads.
+
+    Length is not enforced. The secret is chosen by the operator in the Razorpay
+    dashboard, and rejecting a short but genuine secret would block a correct
+    deployment; a warning is logged instead so the weakness is visible without
+    inventing a policy Razorpay does not have.
+    """
+    configured = settings.razorpay_webhook_secret.strip()
+    if not settings.is_production:
+        return configured
+    if not configured:
+        raise InsecureWebhookSecretError(
+            "RAZORPAY_WEBHOOK_SECRET is not set. Production refuses to run without it, "
+            "because an unverified webhook is an unauthenticated way to create payment events."
+        )
+    if configured == DEFAULT_WEBHOOK_SECRET:
+        raise InsecureWebhookSecretError(
+            f"RAZORPAY_WEBHOOK_SECRET is still the published example value {DEFAULT_WEBHOOK_SECRET!r}. "
+            "Anyone can sign a payload with it. Copy the real signing secret from the Razorpay "
+            "dashboard webhook settings and supply it through the deployment's secret store."
+        )
+    if len(configured) < MIN_SIGNING_KEY_LENGTH:
+        LOGGER.warning(
+            "webhook secret is shorter than recommended",
+            extra={"configured_length": len(configured), "recommended_length": MIN_SIGNING_KEY_LENGTH},
+        )
+    return configured
 
 
 class TokenSigner:
