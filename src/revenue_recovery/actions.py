@@ -44,6 +44,8 @@ class ActionContext:
     amount: float
     retry_count: int
     recovery_probability: float
+    customer_id: str = ""
+    customer_phone: str = ""
     incident_active: bool = False
     # True only when an authorized reviewer resolved an escalated case. It reaches
     # the high-value guardrail and stops there; the fraud hard stop and the retry

@@ -232,6 +232,36 @@ class DriftResponse(BaseModel):
     status: str
 
 
+class DemoProcessRequest(BaseModel):
+    payment_id: str = Field(min_length=1, max_length=100)
+    demo_scenario: str = Field(default="INSUFFICIENT_FUNDS")
+    customer_name: str | None = Field(default="Rajesh Kumar")
+    customer_email: str | None = Field(default="rajesh.test@example.com")
+    amount: float = Field(default=500.0, ge=101.0)
+
+
+class DemoProcessResponse(BaseModel):
+    event_id: int
+    payment_id: str
+    demo_scenario: str
+    failure_category: str
+    amount: float
+    recovery_probability: float
+    churn_risk: float
+    revenue_at_risk: float
+    priority_score: float
+    action: str
+    retry_delay_hours: int | None = None
+    reason: str
+    policy_allowed: bool
+    guardrail_rule: str | None = None
+    guardrail_reason: str | None = None
+    recovered: bool | None = None
+    final_state: str
+    outbound_channel_status: str | None = None
+
+
+
 class EventHistoryItem(BaseModel):
     event_id: int
     payment_id: str

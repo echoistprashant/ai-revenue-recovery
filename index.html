@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Razorpay AI Revenue Recovery - Test Payment Console</title>
+  <!-- Razorpay Checkout JS -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <style>
+    :root {
+      --bg-dark: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --input-bg: #1f2937;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent-cyan: #38bdf8;
+      --accent-blue: #2563eb;
+      --status-green: #10b981;
+      --status-red: #ef4444;
+      --status-amber: #f59e0b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    .header-container {
+      text-align: center;
+      margin-bottom: 2rem;
+      max-width: 800px;
+    }
+
+    .header-badge {
+      display: inline-block;
+      background-color: rgba(239, 68, 68, 0.15);
+      color: var(--status-red);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 0.75rem;
+    }
+
+    h1 {
+      font-size: 1.875rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      color: #ffffff;
+      margin-bottom: 0.25rem;
+    }
+
+    .subtitle {
+      color: var(--accent-cyan);
+      font-size: 0.875rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .main-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      width: 100%;
+      max-width: 1000px;
+    }
+
+    @media (max-width: 768px) {
+      .main-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+    }
+
+    .card-title {
+      font-size: 1.125rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+      color: #ffffff;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 0.5rem;
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      margin-bottom: 0.375rem;
+    }
+
+    input, select {
+      width: 100%;
+      background-color: var(--input-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 0.625rem 0.875rem;
+      color: #ffffff;
+      font-size: 0.875rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--accent-cyan);
+    }
+
+    .btn-pay {
+      width: 100%;
+      background-color: var(--accent-blue);
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-weight: 700;
+      font-size: 0.875rem;
+      cursor: pointer;
+      margin-top: 0.5rem;
+      transition: background-color 0.2s;
+    }
+
+    .btn-pay:hover {
+      background-color: #1d4ed8;
+    }
+
+    .btn-pay:disabled {
+      background-color: #374151;
+      cursor: not-allowed;
+    }
+
+    .pipeline-status {
+      display: flex;
+      flex-direction: column;
+      gap: 0.875rem;
+    }
+
+    .status-box {
+      border-radius: 6px;
+      padding: 1rem;
+      font-size: 0.875rem;
+      border: 1px solid transparent;
+    }
+
+    .status-success {
+      background-color: rgba(16, 185, 129, 0.1);
+      border-color: rgba(16, 185, 129, 0.3);
+      color: var(--status-green);
+    }
+
+    .status-failed {
+      background-color: rgba(239, 68, 68, 0.1);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: var(--status-red);
+    }
+
+    .status-amber {
+      background-color: rgba(245, 158, 11, 0.1);
+      border-color: rgba(245, 158, 11, 0.3);
+      color: var(--status-amber);
+    }
+
+    .pipeline-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.875rem;
+    }
+
+    .pipeline-step .icon {
+      color: var(--status-green);
+      font-weight: bold;
+    }
+
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.375rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.8125rem;
+    }
+
+    .data-label {
+      color: var(--text-muted);
+    }
+
+    .data-val {
+      font-weight: 600;
+      color: #ffffff;
+      font-family: monospace;
+    }
+
+    footer {
+      margin-top: 3rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header-container">
+    <div class="header-badge">TEST MODE — NO REAL MONEY</div>
+    <h1>RAZORPAY AI REVENUE RECOVERY</h1>
+    <div class="subtitle">TEST PAYMENT CONSOLE</div>
+  </div>
+
+  <div class="main-container">
+    <!-- Payment Form Card -->
+    <div class="card">
+      <div class="card-title">Initiate Test Payment</div>
+      
+      <div class="form-group">
+        <label for="keyId">Razorpay Test Key ID</label>
+        <input type="text" id="keyId" value="rzp_test_TVg8XspXYtU5Jr" placeholder="rzp_test_YOUR_KEY_ID">
+      </div>
+
+      <div class="form-group">
+        <label for="backendUrl">Recovery Backend API URL</label>
+        <input type="text" id="backendUrl" value="" placeholder="http://34.69.110.197:8000">
+      </div>
+
+      <div class="form-group">
+        <label for="customerName">Customer Name</label>
+        <input type="text" id="customerName" value="Rajesh Kumar">
+      </div>
+
+      <div class="form-group">
+        <label for="customerEmail">Customer Email</label>
+        <input type="email" id="customerEmail" value="rajesh.test@example.com">
+      </div>
+
+      <div class="form-group">
+        <label for="amount">Amount (₹, Min 101)</label>
+        <input type="number" id="amount" value="500" min="101">
+      </div>
+
+      <div class="form-group">
+        <label for="demoScenario">Demo Recovery Scenario</label>
+        <select id="demoScenario">
+          <option value="INSUFFICIENT_FUNDS">Insufficient Funds (Auto Retry + Outbound Call)</option>
+          <option value="CARD_EXPIRED">Card Expired (Payment Method Update)</option>
+          <option value="AUTHENTICATION_FAILED">Authentication Failed (Retry Delay)</option>
+          <option value="MANDATE_REJECTED">Mandate Rejected (Bank Declined)</option>
+          <option value="FRAUD_RISK_DECLINE">Fraud Risk Decline (Guardrail Hard Stop)</option>
+          <option value="GENERIC_FAILURE">Generic Failure (Temporary Issue)</option>
+        </select>
+      </div>
+
+      <button class="btn-pay" id="payBtn" onclick="initiatePayment()">Pay Test Payment</button>
+    </div>
+
+    <!-- Output & Recovery Pipeline Console -->
+    <div class="card">
+      <div class="card-title">Recovery Pipeline Output</div>
+      <div id="outputContainer" class="pipeline-status">
+        <div class="status-box status-amber">
+          Ready. Click "Pay Test Payment" to trigger a payment attempt and observe the AI Recovery Pipeline.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Development / Hackathon Demo Only — AI Revenue Recovery Platform
+  </footer>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      const defaultHost = window.location.hostname || "localhost";
+      document.getElementById("backendUrl").value = `${window.location.protocol}//${defaultHost}:8000`;
+    });
+
+    // Duplicate Protection Set
+    const processedPaymentIds = new Set();
+
+    function initiatePayment() {
+      const keyId = document.getElementById("keyId").value.trim();
+      const customerName = document.getElementById("customerName").value.trim();
+      const customerEmail = document.getElementById("customerEmail").value.trim();
+      const amount = parseFloat(document.getElementById("amount").value);
+      const demoScenario = document.getElementById("demoScenario").value;
+
+      if (!keyId || keyId === "rzp_test_YOUR_KEY_ID") {
+        alert("Please enter a valid Razorpay Test Key ID (e.g. rzp_test_XXXXXX)");
+        return;
+      }
+
+      if (isNaN(amount) || amount < 101) {
+        alert("Minimum payment amount is ₹101.");
+        return;
+      }
+
+      const options = {
+        key: keyId,
+        amount: Math.round(amount * 100),
+        currency: "INR",
+        name: "Razorpay AI Revenue Recovery",
+        description: `Test Payment (${demoScenario})`,
+        prefill: {
+          name: customerName,
+          email: customerEmail,
+          contact: "9876543210"
+        },
+        theme: {
+          color: "#2563eb"
+        },
+        handler: function (response) {
+          handleSuccess(response, amount);
+        },
+        modal: {
+          ondismiss: function () {
+            // If user closes modal, simulate the failed payment scenario for testing!
+            const dummyPaymentId = "pay_demo_" + Math.floor(100000 + Math.random() * 900000);
+            handleFailure({
+              error: {
+                metadata: { payment_id: dummyPaymentId },
+                code: "BAD_REQUEST_ERROR",
+                description: "Payment failed / canceled by user in Razorpay Checkout"
+              }
+            }, demoScenario);
+          }
+        }
+      };
+
+      try {
+        const rzp = new Razorpay(options);
+        rzp.on('payment.failed', function (response) {
+          handleFailure(response, demoScenario);
+        });
+        rzp.open();
+      } catch (err) {
+        console.error("Razorpay Checkout Error:", err);
+        // Fallback for direct testing if script is blocked or key invalid
+        const dummyPaymentId = "pay_demo_" + Math.floor(100000 + Math.random() * 900000);
+        handleFailure({
+          error: {
+            metadata: { payment_id: dummyPaymentId },
+            code: "BAD_REQUEST_ERROR",
+            description: "Razorpay test checkout modal triggered failure handler"
+          }
+        }, demoScenario);
+      }
+    }
+
+    function handleSuccess(response, amount) {
+      const output = document.getElementById("outputContainer");
+      output.innerHTML = `
+        <div class="status-box status-success">
+          <h3 style="margin-bottom:0.5rem;font-weight:700;">✓ PAYMENT SUCCESSFUL</h3>
+          <div class="data-row"><span class="data-label">Payment ID:</span><span class="data-val">${response.razorpay_payment_id}</span></div>
+          <div class="data-row"><span class="data-label">Amount:</span><span class="data-val">₹${amount}</span></div>
+          <div class="data-row"><span class="data-label">Environment:</span><span class="data-val">RAZORPAY TEST MODE</span></div>
+        </div>
+      `;
+    }
+
+    function handleFailure(response, demoScenario) {
+      const paymentId = (response.error && response.error.metadata && response.error.metadata.payment_id) || "pay_demo_" + Date.now();
+      const errorCode = (response.error && response.error.code) || "BAD_REQUEST_ERROR";
+      const errorDesc = (response.error && response.error.description) || "Payment failed";
+
+      const output = document.getElementById("outputContainer");
+
+      if (processedPaymentIds.has(paymentId)) {
+        output.innerHTML += `
+          <div class="status-box status-amber" style="margin-top:1rem;">
+            ⚠ Payment ${paymentId} already submitted to recovery pipeline. Duplicate ignored.
+          </div>
+        `;
+        return;
+      }
+      processedPaymentIds.add(paymentId);
+
+      output.innerHTML = `
+        <div class="status-box status-failed">
+          <h3 style="margin-bottom:0.5rem;font-weight:700;">✗ PAYMENT FAILED</h3>
+          <div class="data-row"><span class="data-label">Payment ID:</span><span class="data-val">${paymentId}</span></div>
+          <div class="data-row"><span class="data-label">Razorpay Error Code:</span><span class="data-val">${errorCode}</span></div>
+          <div class="data-row"><span class="data-label">Description:</span><span class="data-val">${errorDesc}</span></div>
+          <div class="data-row"><span class="data-label">Demo Scenario:</span><span class="data-val">${demoScenario}</span></div>
+        </div>
+        <div class="status-box status-amber" id="pipelineBox">
+          ⏳ Submitting to AI Recovery Pipeline...
+        </div>
+      `;
+
+      submitToRecoveryBackend(paymentId, demoScenario);
+    }
+
+    async function submitToRecoveryBackend(paymentId, demoScenario) {
+      const baseUrl = document.getElementById("backendUrl").value.trim().replace(/\/$/, "");
+      const customerName = document.getElementById("customerName").value.trim();
+      const customerEmail = document.getElementById("customerEmail").value.trim();
+      const amount = parseFloat(document.getElementById("amount").value) || 500;
+
+      const pipelineBox = document.getElementById("pipelineBox");
+
+      try {
+        const response = await fetch(`${baseUrl}/api/v1/cases/process`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            payment_id: paymentId,
+            demo_scenario: demoScenario,
+            customer_name: customerName,
+            customer_email: customerEmail,
+            amount: amount
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({ detail: response.statusText }));
+          pipelineBox.className = "status-box status-failed";
+          pipelineBox.innerHTML = `✗ Backend API Error (${response.status}): ${errData.detail || "Failed to process case"}`;
+          return;
+        }
+
+        const data = await response.json();
+        renderPipelineSuccess(pipelineBox, data);
+      } catch (err) {
+        console.error("Backend request error:", err);
+        pipelineBox.className = "status-box status-failed";
+        pipelineBox.innerHTML = `✗ CORS / Network Error connecting to ${baseUrl}: Make sure backend API is running!`;
+      }
+    }
+
+    function renderPipelineSuccess(container, data) {
+      const isAllowed = data.policy_allowed;
+      container.className = isAllowed ? "status-box status-success" : "status-box status-amber";
+
+      container.innerHTML = `
+        <h3 style="margin-bottom:0.75rem;font-weight:700;">RECOVERY PIPELINE RESULT</h3>
+        <div class="pipeline-step"><span class="icon">✓</span><span>Payment failure received</span></div>
+        <div class="pipeline-step"><span class="icon">✓</span><span>Recovery case created (ID: <strong>${data.event_id}</strong>)</span></div>
+        <div class="pipeline-step"><span class="icon">✓</span><span>Diagnosis: <strong>${data.failure_category}</strong></span></div>
+        <div class="pipeline-step"><span class="icon">✓</span><span>ML Likelihood: <strong>P(${(data.recovery_probability * 100).toFixed(1)}%)</strong> | Priority: <strong>${data.priority_score.toFixed(2)}</strong></span></div>
+        <div class="pipeline-step"><span class="icon">✓</span><span>Policy: <strong>${isAllowed ? "ALLOWED" : "STOPPED"}</strong> ${data.guardrail_reason ? "(" + data.guardrail_reason + ")" : ""}</span></div>
+        <div class="pipeline-step"><span class="icon">✓</span><span>Action: <strong>${data.action}</strong></span></div>
+        <div class="pipeline-step"><span class="icon">✓</span><span>Outbound: <strong>${data.outbound_channel_status}</strong></span></div>
+
+        <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid rgba(255,255,255,0.1);font-size:0.8125rem;">
+          <strong>Decision Reason:</strong> ${data.reason}
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>

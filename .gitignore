@@ -4,6 +4,7 @@
 !.env.example
 *.pem
 *.key
+deploy_bundle.tar.gz
 
 # Python bytecode, caches, environments
 __pycache__/

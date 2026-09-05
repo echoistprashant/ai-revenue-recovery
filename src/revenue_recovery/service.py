@@ -10,6 +10,13 @@ from revenue_recovery.database import Database, DatabaseConnection
 from revenue_recovery.decision_engine import DecisionContext, DecisionEngine
 from revenue_recovery.guardrails import HIGH_VALUE_REVIEW, evaluate_guardrails
 from revenue_recovery.models import AuditEntry, CaseResolution, EventHistoryItem, FailureCategory, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics, ResolveCaseResponse, ReviewCase
+from revenue_recovery.outbound import (
+    MultiChannelNotificationProvider,
+    RetellVoiceCallProvider,
+    TwilioWhatsAppProvider,
+    VapiVoiceCallProvider,
+    VomyraVoiceCallProvider,
+)
 from revenue_recovery.scoring import RecoveryScorer, ScoreResult
 from revenue_recovery.tasks import TaskQueue, TaskType
 from revenue_recovery.worker import RecoveryWorker
@@ -23,6 +30,7 @@ FINAL_STATE_BY_ACTION = {
     RecoveryAction.SUPPRESS_RETRY: "SUPPRESSED",
     RecoveryAction.ESCALATE_TO_HUMAN: "ESCALATED",
     RecoveryAction.CHANGE_PAYMENT_METHOD: "AWAITING_METHOD_UPDATE",
+    RecoveryAction.SEND_NOTIFICATION: "AWAITING_CUSTOMER",
 }
 
 # The only state a reviewer may act on. A fraud decline lands in STOPPED and so is
@@ -56,8 +64,8 @@ class Dispatch:
     recovered: bool | None
     final_state: str
     recovered_amount: float
-    task_id: int | None
-    detail: str
+    task_id: int | None = None
+    detail: str | None = None
 
 
 class PaymentRecoveryService:
@@ -72,7 +80,43 @@ class PaymentRecoveryService:
                 retry_provider = RazorpayRetryProvider(settings.razorpay_key_id, settings.razorpay_key_secret)
             else:
                 retry_provider = SimulatedRetryProvider()
-            action_executor = ActionExecutor(decision_engine=self.decision_engine, retry_provider=retry_provider)
+
+            vp_choice = settings.voice_provider.lower()
+            if vp_choice == "vapi":
+                voice_provider = VapiVoiceCallProvider(
+                    api_key=settings.vapi_api_key,
+                    assistant_id=settings.vapi_assistant_id,
+                    phone_number_id=settings.vapi_phone_number_id,
+                    fallback_phone=settings.vapi_fallback_phone,
+                )
+            elif vp_choice == "vomyra":
+                voice_provider = VomyraVoiceCallProvider(
+                    api_key=settings.vomyra_api_key,
+                    agent_id=settings.vomyra_agent_id,
+                    api_url=settings.vomyra_api_url,
+                    fallback_phone=settings.vomyra_fallback_phone,
+                )
+            else:
+                voice_provider = RetellVoiceCallProvider(
+                    api_key=settings.retell_api_key,
+                    agent_id=settings.retell_agent_id,
+                    from_number=settings.retell_from_number,
+                    fallback_phone=settings.retell_fallback_phone,
+                )
+            wa_provider = TwilioWhatsAppProvider(
+                account_sid=settings.twilio_account_sid,
+                auth_token=settings.twilio_auth_token,
+                whatsapp_from=settings.twilio_whatsapp_from,
+            )
+            notification_provider = MultiChannelNotificationProvider(
+                voice_provider=voice_provider,
+                whatsapp_provider=wa_provider,
+            )
+            action_executor = ActionExecutor(
+                decision_engine=self.decision_engine,
+                retry_provider=retry_provider,
+                notification_provider=notification_provider,
+            )
         self.action_executor = action_executor
         self.task_queue = TaskQueue(
             max_attempts=settings.task_max_attempts,
@@ -265,6 +309,7 @@ class PaymentRecoveryService:
             amount=event.amount,
             retry_count=event.retry_count,
             recovery_probability=score.recovery_probability if score else 0.0,
+            customer_id=event.customer_id,
         )
         result = self.action_executor.execute(task_type, context)
         if task_id is not None:

@@ -30,7 +30,7 @@ from revenue_recovery.llm_boundary import AnalystTools, ApprovedCommunication, C
 from revenue_recovery.experimentation import ExperimentEvent, run_experiment
 from revenue_recovery.monitoring import ApplicationMetrics, drift_status, population_stability_index
 from revenue_recovery.observability import configure_logging, mask_identifier
-from revenue_recovery.models import AnalystRequest, AnalystResponse, AuditEntry, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, DriftRequest, DriftResponse, EventHistoryItem, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, LoginRequest, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PriorityCase, ProcessedEvent, RecoveryMetrics, ResolveCaseRequest, ResolveCaseResponse, ReviewCase, TokenResponse, UserCreate, UserResponse
+from revenue_recovery.models import AnalystRequest, AnalystResponse, AuditEntry, CommunicationRequest, CommunicationResponse, DecisionRequest, DecisionResponse, DemoProcessRequest, DemoProcessResponse, DriftRequest, DriftResponse, EventHistoryItem, ExperimentRequest, ExperimentResponse, GatewayHealthRequest, GatewayHealthResponse, LoginRequest, OptimizationRequest, OptimizationResponse, PaymentEventCreate, PaymentMethod, PriorityCase, ProcessedEvent, RecoveryAction, RecoveryMetrics, ResolveCaseRequest, ResolveCaseResponse, ReviewCase, TokenResponse, UserCreate, UserResponse
 from revenue_recovery.optimization import PaymentHistory, recommend_payment_method, recommend_retry_window
 from revenue_recovery.rate_limit import RateLimiter
 from revenue_recovery.security import TokenError, TokenSigner, WeakPasswordError, resolve_webhook_secret
@@ -209,6 +209,76 @@ def create_app(
         if target.username == admin.username:
             raise HTTPException(status_code=422, detail="An administrator cannot deactivate their own account")
         return _user_response(users.set_active(username, False))
+
+    @app.post("/api/v1/cases/process", response_model=DemoProcessResponse, status_code=status.HTTP_201_CREATED)
+    def process_demo_case(payload: DemoProcessRequest) -> DemoProcessResponse:
+        """Public demo endpoint for developer payment console (index.html).
+
+        Accepts a payment ID and demo scenario (CARD_EXPIRED, INSUFFICIENT_FUNDS,
+        AUTHENTICATION_FAILED, MANDATE_REJECTED, GENERIC_FAILURE, FRAUD_RISK_DECLINE),
+        maps it to the recovery platform schema, and processes it through classification,
+        ML scoring, guardrails, decision engine, and outbound notifications.
+        """
+        scenario_code_map = {
+            "CARD_EXPIRED": "card_expired",
+            "INSUFFICIENT_FUNDS": "insufficient_funds",
+            "AUTHENTICATION_FAILED": "authentication_failed",
+            "MANDATE_REJECTED": "bank_declined",
+            "GENERIC_FAILURE": "temporary_bank_issue",
+            "FRAUD_RISK_DECLINE": "fraud_suspected",
+        }
+        failure_code = scenario_code_map.get(payload.demo_scenario.upper(), "insufficient_funds")
+        event = PaymentEventCreate(
+            payment_id=payload.payment_id,
+            attempt_id=f"att_demo_{int(utc_now().timestamp())}",
+            customer_id=f"cust_{abs(hash(payload.customer_email or 'rajesh.test@example.com')) % 10000}",
+            subscription_id=f"sub_demo_{payload.payment_id}",
+            amount=payload.amount,
+            currency="INR",
+            payment_method=PaymentMethod.CARD,
+            gateway="RAZORPAY",
+            bank="HDFC",
+            failure_code=failure_code,
+            timestamp=utc_now(),
+            previous_success_count=2,
+            previous_failure_count=1,
+            customer_age_days=90,
+            subscription_value=payload.amount,
+            retry_count=0,
+        )
+        processed = recovery_service.process_event(event, tenant_id=active_settings.default_tenant)
+        audit_trail = recovery_service.get_audit_trail(event_id=processed.event_id, limit=5, tenant_id=active_settings.default_tenant)
+        guardrail_rule = None
+        guardrail_reason = None
+        for entry in audit_trail:
+            reason = str(entry.details.get("reason", ""))
+            if "guardrail" in reason.lower() or reason.startswith("Fraud") or reason.startswith("Retry cap") or reason.startswith("High-value"):
+                guardrail_rule = entry.details.get("guardrail_rule") or str(entry.details.get("action", ""))
+                guardrail_reason = reason
+                break
+
+        policy_allowed = processed.action not in (RecoveryAction.STOP_RECOVERY, RecoveryAction.SUPPRESS_RETRY)
+
+        return DemoProcessResponse(
+            event_id=processed.event_id,
+            payment_id=processed.payment_id,
+            demo_scenario=payload.demo_scenario.upper(),
+            failure_category=processed.failure_category.value,
+            amount=payload.amount,
+            recovery_probability=processed.recovery_probability or 0.0,
+            churn_risk=processed.churn_risk or 0.0,
+            revenue_at_risk=processed.revenue_at_risk or 0.0,
+            priority_score=processed.priority_score or 0.0,
+            action=processed.action.value,
+            retry_delay_hours=processed.retry_delay_hours,
+            reason=processed.reason,
+            policy_allowed=policy_allowed,
+            guardrail_rule=guardrail_rule,
+            guardrail_reason=guardrail_reason,
+            recovered=processed.recovered,
+            final_state="PROCESSED" if processed.recovered else ("STOPPED" if not policy_allowed else "AWAITING_CUSTOMER"),
+            outbound_channel_status="Retell AI Voice Call & WhatsApp Dispatched" if policy_allowed else "Notifications Suppressed by Guardrail",
+        )
 
     @app.post("/events", response_model=ProcessedEvent, status_code=status.HTTP_201_CREATED)
     def ingest_event(event: PaymentEventCreate, operator: Operator) -> ProcessedEvent:

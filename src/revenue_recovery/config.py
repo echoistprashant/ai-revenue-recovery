@@ -62,6 +62,23 @@ class Settings:
     login_rate_limit_per_minute: int = 10
     enforce_https: bool = False
     default_tenant: str = DEFAULT_TENANT
+    voice_provider: str = "retell"
+    retell_api_key: str = ""
+    retell_agent_id: str = ""
+    retell_from_number: str = ""
+    retell_fallback_phone: str = ""
+    vomyra_api_key: str = ""
+    vomyra_agent_id: str = ""
+    vomyra_api_url: str = "https://api.vomyra.ai/v1/calls"
+    vomyra_fallback_phone: str = ""
+    vapi_api_key: str = ""
+    vapi_assistant_id: str = ""
+    vapi_phone_number_id: str = ""
+    vapi_fallback_phone: str = ""
+    whatsapp_provider: str = "log"
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_from: str = ""
 
     def __post_init__(self) -> None:
         if self.task_execution_mode not in EXECUTION_MODES:
@@ -86,6 +103,22 @@ class Settings:
     @property
     def has_razorpay_credentials(self) -> bool:
         return bool(self.razorpay_key_id.strip() and self.razorpay_key_secret.strip())
+
+    @property
+    def has_retell_credentials(self) -> bool:
+        return bool(self.retell_api_key.strip() and self.retell_agent_id.strip())
+
+    @property
+    def has_vomyra_credentials(self) -> bool:
+        return bool(self.vomyra_api_key.strip() and self.vomyra_agent_id.strip())
+
+    @property
+    def has_vapi_credentials(self) -> bool:
+        return bool(self.vapi_api_key.strip())
+
+    @property
+    def has_whatsapp_credentials(self) -> bool:
+        return bool(self.twilio_account_sid.strip() and self.twilio_auth_token.strip())
 
     @property
     def has_gemini_key(self) -> bool:
@@ -150,6 +183,23 @@ class Settings:
             # bearer tokens in clear text.
             enforce_https=_flag(source, "ENFORCE_HTTPS", environment.strip().lower() == "production"),
             default_tenant=source.get("DEFAULT_TENANT", DEFAULT_TENANT),
+            voice_provider=source.get("VOICE_PROVIDER", "retell"),
+            retell_api_key=source.get("RETELL_API_KEY", ""),
+            retell_agent_id=source.get("RETELL_AGENT_ID", ""),
+            retell_from_number=source.get("RETELL_FROM_NUMBER", ""),
+            retell_fallback_phone=source.get("RETELL_FALLBACK_PHONE", ""),
+            vomyra_api_key=source.get("VOMYRA_API_KEY", ""),
+            vomyra_agent_id=source.get("VOMYRA_AGENT_ID", ""),
+            vomyra_api_url=source.get("VOMYRA_API_URL", "https://api.vomyra.ai/v1/calls"),
+            vomyra_fallback_phone=source.get("VOMYRA_FALLBACK_PHONE", ""),
+            vapi_api_key=source.get("VAPI_API_KEY", ""),
+            vapi_assistant_id=source.get("VAPI_ASSISTANT_ID", ""),
+            vapi_phone_number_id=source.get("VAPI_PHONE_NUMBER_ID", ""),
+            vapi_fallback_phone=source.get("VAPI_FALLBACK_PHONE", ""),
+            whatsapp_provider=source.get("WHATSAPP_PROVIDER", "log"),
+            twilio_account_sid=source.get("TWILIO_ACCOUNT_SID", ""),
+            twilio_auth_token=source.get("TWILIO_AUTH_TOKEN", ""),
+            twilio_whatsapp_from=source.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886"),
         )
 
 
