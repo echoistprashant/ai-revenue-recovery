@@ -298,7 +298,8 @@
   <script>
     document.addEventListener("DOMContentLoaded", function() {
       const defaultHost = window.location.hostname || "localhost";
-      document.getElementById("backendUrl").value = `${window.location.protocol}//${defaultHost}:8000`;
+      const port = window.location.port;
+      document.getElementById("backendUrl").value = port ? `${window.location.protocol}//${defaultHost}:${port}` : `${window.location.protocol}//${defaultHost}`;
     });
 
     // Duplicate Protection Set
